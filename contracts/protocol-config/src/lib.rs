@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env};
 
 #[contract]
 pub struct ProtocolConfigContract;
@@ -11,6 +11,36 @@ enum DataKey {
     Paused,
     ConfigVersion,
     SchemaVersion(u32),
+}
+
+#[contractevent]
+pub struct Initialized {
+    pub admin: Address,
+}
+
+#[contractevent]
+pub struct AdminChanged {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct Paused {
+    pub paused: bool,
+}
+
+#[contractevent]
+pub struct Unpaused {
+    pub paused: bool,
+}
+
+#[contractevent]
+pub struct SchemaApproved {
+    pub version: u32,
+}
+
+#[contractevent]
+pub struct SchemaDeprecated {
+    pub version: u32,
 }
 
 #[contractimpl]
@@ -26,7 +56,7 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ConfigVersion, &1_u32);
-        env.events().publish((symbol_short!("init"),), admin);
+        Initialized { admin }.publish(&env);
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -41,7 +71,7 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         Self::bump_config_version(env.clone());
-        env.events().publish((symbol_short!("admin"),), new_admin);
+        AdminChanged { new_admin }.publish(&env);
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -56,7 +86,7 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &true);
         Self::bump_config_version(env.clone());
-        env.events().publish((symbol_short!("pause"),), true);
+        Paused { paused: true }.publish(&env);
     }
 
     pub fn unpause(env: Env) {
@@ -64,7 +94,7 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &false);
         Self::bump_config_version(env.clone());
-        env.events().publish((symbol_short!("unpause"),), false);
+        Unpaused { paused: false }.publish(&env);
     }
 
     pub fn approve_schema_version(env: Env, version: u32) {
@@ -75,8 +105,7 @@ impl ProtocolConfigContract {
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
         Self::bump_config_version(env.clone());
-        env.events()
-            .publish((symbol_short!("schema"), symbol_short!("approve")), version);
+        SchemaApproved { version }.publish(&env);
     }
 
     pub fn deprecate_schema_version(env: Env, version: u32) {
@@ -87,8 +116,7 @@ impl ProtocolConfigContract {
             .persistent()
             .set(&DataKey::SchemaVersion(version), &false);
         Self::bump_config_version(env.clone());
-        env.events()
-            .publish((symbol_short!("schema"), symbol_short!("deprec")), version);
+        SchemaDeprecated { version }.publish(&env);
     }
 
     pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
