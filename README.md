@@ -29,7 +29,8 @@ Implemented:
 - `proof-registry` contract with proof registration, expiration validation, revocation state, issuer checks, protocol pause checks, schema approval checks, and lookup helpers
 - Typed protocol configuration events
 - Storage TTL extension policy for durable and temporary entries
-- Testnet deployment scripts and manifest validation
+- Testnet deployment scripts using `stellar contract build`, issuer registration, and manifest validation
+- Contract tests exercise authorization through Soroban mocked auth instead of compiling out `require_auth`
 - Buildable contract crates against `soroban-sdk`
 
 The `protocol-config` contract currently supports:
@@ -48,8 +49,8 @@ The `protocol-config` contract currently supports:
 Next:
 
 - Run a public testnet deployment and replace the example manifest placeholders with live contract IDs and WASM hashes
-- Connect backend proof issuance to the deployed proof registry
-- Add backend integration notes after contract anchoring is wired
+- Run backend contract anchoring against deployed contract IDs
+- Publish explorer links for deployment and proof lifecycle transactions
 
 ## Tech Stack
 
@@ -89,9 +90,9 @@ cargo clippy --workspace --all-targets
 
 The repository now pins a stable Rust toolchain in `rust-toolchain.toml` and CI runs formatting, clippy, tests, and build.
 
-The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, proof registration/expiration/revocation/duplicate prevention, cross-contract dependency checks, and storage TTL behavior.
+The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, proof registration/expiration/revocation/duplicate prevention, cross-contract dependency checks, storage TTL behavior, and authorization paths through mocked Soroban auth.
 
-The remaining readiness blockers are backend anchoring against deployed contracts and public testnet evidence.
+The remaining readiness blockers are live backend anchoring against deployed contracts and public testnet evidence.
 
 The `protocol-config` contract uses typed `#[contractevent]` events. Deployment automation is available under `scripts/`.
 
