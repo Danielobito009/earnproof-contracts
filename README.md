@@ -26,7 +26,10 @@ Implemented:
 - Shared on-chain record types
 - `protocol-config` contract
 - `issuer-registry` contract with issuer registration, status transitions, address rotation, and lookup helpers
-- `proof-registry` contract with proof registration, expiration validation, revocation state, and lookup helpers
+- `proof-registry` contract with proof registration, expiration validation, revocation state, issuer checks, protocol pause checks, schema approval checks, and lookup helpers
+- Typed protocol configuration events
+- Storage TTL extension policy for durable and temporary entries
+- Testnet deployment scripts and manifest validation
 - Buildable contract crates against `soroban-sdk`
 
 The `protocol-config` contract currently supports:
@@ -42,14 +45,11 @@ The `protocol-config` contract currently supports:
 - `is_schema_version_approved`
 - `get_config_version`
 
-Planned next:
+Next:
 
-- Add meaningful contract tests
-- Enforce issuer-registry and protocol-config checks during proof registration
-- Add deployment scripts
-- Add testnet deployment manifest
-- Add backend integration notes
-- Add storage TTL and archival policy
+- Run a public testnet deployment and replace the example manifest placeholders with live contract IDs and WASM hashes
+- Connect backend proof issuance to the deployed proof registry
+- Add backend integration notes after contract anchoring is wired
 
 ## Tech Stack
 
@@ -89,11 +89,11 @@ cargo clippy --workspace --all-targets
 
 The repository now pins a stable Rust toolchain in `rust-toolchain.toml` and CI runs formatting, clippy, tests, and build.
 
-The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, and proof registration/expiration/revocation/duplicate prevention.
+The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, proof registration/expiration/revocation/duplicate prevention, cross-contract dependency checks, and storage TTL behavior.
 
-The remaining readiness blockers are cross-contract enforcement, storage TTL policy, deployment automation, and public testnet evidence.
+The remaining readiness blockers are backend anchoring against deployed contracts and public testnet evidence.
 
-The `protocol-config` contract uses typed `#[contractevent]` events.
+The `protocol-config` contract uses typed `#[contractevent]` events. Deployment automation is available under `scripts/`.
 
 ## On-Chain Privacy Boundary
 
