@@ -1162,6 +1162,8 @@ name = "proof-registry"
 version = "0.1.0"
 dependencies = [
  "earnproof-shared",
+ "issuer-registry",
+ "protocol-config",
  "soroban-sdk",
 ]
 
