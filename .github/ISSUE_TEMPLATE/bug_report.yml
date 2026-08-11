@@ -1,0 +1,26 @@
+name: Bug report
+description: Report a reproducible contract bug
+title: "[Bug]: "
+labels: ["type: bug", "status: needs triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include contract, function, input, and observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Suggested validation
+      description: What test should prove the fix?
+    validations:
+      required: false
