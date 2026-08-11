@@ -1,9 +1,18 @@
 #![no_std]
 
 use earnproof_shared::{ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
-use issuer_registry::IssuerRegistryContractClient;
-use protocol_config::ProtocolConfigContractClient;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, BytesN, Env};
+
+#[contractclient(name = "ProtocolConfigContractClient")]
+pub trait ProtocolConfigInterface {
+    fn is_paused(env: Env) -> bool;
+    fn is_schema_version_approved(env: Env, version: u32) -> bool;
+}
+
+#[contractclient(name = "IssuerRegistryContractClient")]
+pub trait IssuerRegistryInterface {
+    fn is_active_address(env: Env, issuer_address: Address) -> bool;
+}
 
 #[contract]
 pub struct ProofRegistryContract;

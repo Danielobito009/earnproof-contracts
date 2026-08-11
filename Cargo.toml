@@ -15,3 +15,6 @@ repository = "https://github.com/veridatum-labs/earnproof-contracts"
 [workspace.dependencies]
 soroban-sdk = "27.0.0"
 earnproof-shared = { path = "packages/shared" }
+
+[profile.release]
+overflow-checks = true
