@@ -9,7 +9,8 @@ param(
   [string]$IssuerAddress,
 
   [string]$Network = "testnet",
-  [string]$Output = "scripts/deployment-manifest.testnet.json"
+  [string]$Output = "scripts/deployment-manifest.testnet.json",
+  [int]$MaxRetries = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,20 +21,55 @@ function Assert-Command($Name) {
   }
 }
 
-function Invoke-Step($Description, $Command) {
-  Write-Host "==> $Description"
-  & $Command[0] @($Command | Select-Object -Skip 1)
-  if ($LASTEXITCODE -ne 0) {
-    throw "Command failed: $($Command -join ' ')"
+function Test-RetryableStellarError($Output) {
+  $text = ($Output -join "`n")
+  return $text -match "SendRequest|Connect|connection|timeout|timed out|temporarily unavailable|TxBadSeq"
+}
+
+function Invoke-WithRetry($Description, $Command, [switch]$CaptureOutput) {
+  $attempt = 1
+  $delaySeconds = 2
+
+  while ($true) {
+    Write-Host "==> $Description"
+    if ($attempt -gt 1) {
+      Write-Host "    retry $attempt of $MaxRetries"
+    }
+
+    $output = & $Command[0] @($Command | Select-Object -Skip 1) 2>&1
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -eq 0) {
+      if ($CaptureOutput) {
+        return $output
+      }
+      if ($output) {
+        $output | ForEach-Object { Write-Host $_ }
+      }
+      return
+    }
+
+    if ($output) {
+      $output | ForEach-Object { Write-Warning $_ }
+    }
+
+    if (($attempt -ge $MaxRetries) -or -not (Test-RetryableStellarError $output)) {
+      throw "Command failed after $attempt attempt(s): $($Command -join ' ')"
+    }
+
+    Write-Warning "Retryable Stellar RPC error detected. Waiting $delaySeconds second(s) before retrying."
+    Start-Sleep -Seconds $delaySeconds
+    $attempt += 1
+    $delaySeconds = [Math]::Min($delaySeconds * 2, 30)
   }
 }
 
+function Invoke-Step($Description, $Command) {
+  Invoke-WithRetry $Description $Command
+}
+
 function Invoke-Capture($Description, $Command) {
-  Write-Host "==> $Description"
-  $result = & $Command[0] @($Command | Select-Object -Skip 1)
-  if ($LASTEXITCODE -ne 0) {
-    throw "Command failed: $($Command -join ' ')"
-  }
+  $result = Invoke-WithRetry $Description $Command -CaptureOutput
   foreach ($line in $result) {
     $trimmed = "$line".Trim()
     if ($trimmed -match "^(C[A-Z2-7]{55})$") {

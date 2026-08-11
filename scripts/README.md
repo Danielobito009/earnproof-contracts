@@ -16,6 +16,12 @@ These scripts provide a reproducible Stellar testnet deployment path for the Ear
 .\scripts\deploy-testnet.ps1 -Source deployer -Admin G... -IssuerAddress G... -Output scripts\deployment-manifest.testnet.json
 ```
 
+By default, Stellar CLI deploy and invoke calls are retried up to five times for transient RPC transport failures such as connection resets, send failures, timeouts, temporary unavailability, and sequence races. Override this with `-MaxRetries` when needed:
+
+```powershell
+.\scripts\deploy-testnet.ps1 -Source deployer -Admin G... -IssuerAddress G... -MaxRetries 8
+```
+
 The script:
 
 - installs the `wasm32v1-none` target if needed;

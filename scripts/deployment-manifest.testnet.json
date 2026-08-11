@@ -52,5 +52,5 @@
     "stellar contract deploy --source earnproof-deployer --network testnet --wasm <wasm>",
     "stellar contract invoke --source earnproof-deployer --network testnet --auth-mode root --auto-sign --id <contract> -- <function>"
   ],
-  "notes": "Testnet RPC intermittently returned SendRequest errors during deployment. Contract state was verified after initialization with read-only calls."
+  "notes": "Contract state was verified after initialization with read-only calls. The deployment script now retries transient Stellar RPC transport errors before failing."
 }
