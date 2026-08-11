@@ -49,7 +49,6 @@ Planned next:
 - Add deployment scripts
 - Add testnet deployment manifest
 - Add backend integration notes
-- Add event types using the current Soroban event macro style
 - Add storage TTL and archival policy
 
 ## Tech Stack
@@ -92,9 +91,9 @@ The repository now pins a stable Rust toolchain in `rust-toolchain.toml` and CI 
 
 The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, and proof registration/expiration/revocation/duplicate prevention.
 
-The remaining readiness blockers are cross-contract enforcement, typed events, storage TTL policy, deployment automation, and public testnet evidence.
+The remaining readiness blockers are cross-contract enforcement, storage TTL policy, deployment automation, and public testnet evidence.
 
-The current `protocol-config` event calls compile, but the SDK warns that raw `env.events().publish` is deprecated. The next contract cleanup should move events to the current `#[contractevent]` macro style.
+The `protocol-config` contract uses typed `#[contractevent]` events.
 
 ## On-Chain Privacy Boundary
 
