@@ -48,7 +48,6 @@ The `protocol-config` contract currently supports:
 
 Next:
 
-- Run a public testnet deployment and replace the example manifest placeholders with live contract IDs and WASM hashes
 - Run backend contract anchoring against deployed contract IDs
 - Publish explorer links for deployment and proof lifecycle transactions
 
@@ -92,7 +91,15 @@ The repository now pins a stable Rust toolchain in `rust-toolchain.toml` and CI 
 
 The current test suite covers protocol configuration defaults and schema changes, issuer registration/status transitions/duplicate prevention, proof registration/expiration/revocation/duplicate prevention, cross-contract dependency checks, storage TTL behavior, and authorization paths through mocked Soroban auth.
 
-The remaining readiness blockers are live backend anchoring against deployed contracts and public testnet evidence.
+The current testnet deployment manifest is checked in at `scripts/deployment-manifest.testnet.json`.
+
+Live testnet contract IDs:
+
+- `protocol-config`: `CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A`
+- `issuer-registry`: `CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F`
+- `proof-registry`: `CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK`
+
+The remaining readiness blocker is live backend anchoring against the deployed proof registry.
 
 The `protocol-config` contract uses typed `#[contractevent]` events. Deployment automation is available under `scripts/`.
 

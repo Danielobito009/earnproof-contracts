@@ -34,7 +34,17 @@ function Invoke-Capture($Description, $Command) {
   if ($LASTEXITCODE -ne 0) {
     throw "Command failed: $($Command -join ' ')"
   }
-  return ($result | Select-Object -Last 1).Trim()
+  foreach ($line in $result) {
+    $trimmed = "$line".Trim()
+    if ($trimmed -match "^(C[A-Z2-7]{55})$") {
+      return $Matches[1]
+    }
+    if ($trimmed -match "/contract/(C[A-Z2-7]{55})") {
+      return $Matches[1]
+    }
+  }
+
+  throw "Could not find deployed contract ID in command output: $($result -join ' ')"
 }
 
 function Get-Sha256($Path) {
@@ -79,13 +89,13 @@ try {
   $issuerId = Invoke-Capture "Deploy issuer-registry" @("stellar", "contract", "deploy", "--source", $Source, "--network", $Network, "--wasm", $issuerWasm)
   $proofId = Invoke-Capture "Deploy proof-registry" @("stellar", "contract", "deploy", "--source", $Source, "--network", $Network, "--wasm", $proofWasm)
 
-  Invoke-Step "Initialize protocol-config" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--id", $protocolId, "--", "initialize", "--admin", $Admin)
-  Invoke-Step "Approve schema version 1" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--id", $protocolId, "--", "approve_schema_version", "--version", "1")
-  Invoke-Step "Initialize issuer-registry" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--id", $issuerId, "--", "initialize", "--admin", $Admin)
+  Invoke-Step "Initialize protocol-config" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $protocolId, "--", "initialize", "--admin", $Admin)
+  Invoke-Step "Approve schema version 1" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $protocolId, "--", "approve_schema_version", "--version", "1")
+  Invoke-Step "Initialize issuer-registry" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $issuerId, "--", "initialize", "--admin", $Admin)
   $issuerIdHash = Get-Sha256Text "earnproof-backend:$IssuerAddress"
   $issuerMetadataHash = Get-Sha256Text "earnproof-backend:testnet"
-  Invoke-Step "Register backend issuer" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--id", $issuerId, "--", "register_issuer", "--issuer_id_hash", $issuerIdHash, "--issuer_address", $IssuerAddress, "--metadata_hash", $issuerMetadataHash)
-  Invoke-Step "Initialize proof-registry" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--id", $proofId, "--", "initialize", "--admin", $Admin, "--issuer_registry", $issuerId, "--protocol_config", $protocolId)
+  Invoke-Step "Register backend issuer" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $issuerId, "--", "register_issuer", "--issuer_id_hash", $issuerIdHash, "--issuer_address", $IssuerAddress, "--metadata_hash", $issuerMetadataHash)
+  Invoke-Step "Initialize proof-registry" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $proofId, "--", "initialize", "--admin", $Admin, "--issuer_registry", $issuerId, "--protocol_config", $protocolId)
 
   $manifest = [ordered]@{
     network = "stellar-$Network"
