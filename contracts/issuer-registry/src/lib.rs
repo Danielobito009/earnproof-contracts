@@ -207,11 +207,7 @@ impl IssuerRegistryContract {
     }
 
     fn require_auth(address: &Address) {
-        #[cfg(not(test))]
         address.require_auth();
-
-        #[cfg(test)]
-        let _ = address;
     }
 
     pub fn get_issuer_by_address(env: Env, issuer_address: Address) -> IssuerRecord {
@@ -249,6 +245,7 @@ mod test {
 
     fn setup() -> (Env, IssuerRegistryContractClient<'static>, Address) {
         let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register(IssuerRegistryContract, ());
         let client = IssuerRegistryContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);

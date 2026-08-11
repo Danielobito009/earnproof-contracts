@@ -182,11 +182,7 @@ impl ProofRegistryContract {
     }
 
     fn require_auth(address: &Address) {
-        #[cfg(not(test))]
         address.require_auth();
-
-        #[cfg(test)]
-        let _ = address;
     }
 }
 

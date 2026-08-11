@@ -176,11 +176,7 @@ impl ProtocolConfigContract {
     }
 
     fn require_auth(address: &Address) {
-        #[cfg(not(test))]
         address.require_auth();
-
-        #[cfg(test)]
-        let _ = address;
     }
 }
 
@@ -196,6 +192,7 @@ mod test {
 
     fn setup() -> (Env, ProtocolConfigContractClient<'static>, Address) {
         let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register(ProtocolConfigContract, ());
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
