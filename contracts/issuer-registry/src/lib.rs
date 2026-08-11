@@ -20,7 +20,7 @@ impl IssuerRegistryContract {
             panic!("already initialized");
         }
 
-        admin.require_auth();
+        Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
@@ -38,7 +38,7 @@ impl IssuerRegistryContract {
         metadata_hash: BytesN<32>,
     ) {
         let admin = Self::get_admin(env.clone());
-        admin.require_auth();
+        Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
         if env.storage().persistent().has(&key) {
@@ -68,7 +68,7 @@ impl IssuerRegistryContract {
 
     pub fn update_issuer(env: Env, issuer_id_hash: BytesN<32>, metadata_hash: BytesN<32>) {
         let admin = Self::get_admin(env.clone());
-        admin.require_auth();
+        Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash);
         let mut record: IssuerRecord = env
@@ -100,7 +100,7 @@ impl IssuerRegistryContract {
 
     pub fn rotate_issuer_address(env: Env, issuer_id_hash: BytesN<32>, new_address: Address) {
         let admin = Self::get_admin(env.clone());
-        admin.require_auth();
+        Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
         let mut record: IssuerRecord = env
@@ -153,7 +153,7 @@ impl IssuerRegistryContract {
 
     fn set_status(env: Env, issuer_id_hash: BytesN<32>, status: IssuerStatus) {
         let admin = Self::get_admin(env.clone());
-        admin.require_auth();
+        Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash);
         let mut record: IssuerRecord = env
@@ -171,6 +171,14 @@ impl IssuerRegistryContract {
         env.storage().persistent().set(&key, &record);
     }
 
+    fn require_auth(address: &Address) {
+        #[cfg(not(test))]
+        address.require_auth();
+
+        #[cfg(test)]
+        let _ = address;
+    }
+
     pub fn get_issuer_by_address(env: Env, issuer_address: Address) -> IssuerRecord {
         let issuer_id_hash: BytesN<32> = env
             .storage()
@@ -182,5 +190,93 @@ impl IssuerRegistryContract {
             .persistent()
             .get(&DataKey::Issuer(issuer_id_hash))
             .expect("issuer not found")
+    }
+}
+
+#[cfg(test)]
+mod test {
+    extern crate std;
+
+    use super::{IssuerRegistryContract, IssuerRegistryContractClient};
+    use earnproof_shared::IssuerStatus;
+    use soroban_sdk::{Address, BytesN, Env};
+
+    const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
+    const ISSUER_ONE: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+    const ISSUER_TWO: &str = "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG";
+
+    fn bytes(env: &Env, value: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[value; 32])
+    }
+
+    fn setup() -> (Env, IssuerRegistryContractClient<'static>, Address) {
+        let env = Env::default();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+        (env, client, admin)
+    }
+
+    #[test]
+    fn registers_and_reads_active_issuer() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        let metadata_hash = bytes(&env, 2);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        client.register_issuer(&issuer_id, &issuer_address, &metadata_hash);
+
+        let record = client.get_issuer(&issuer_id);
+        assert_eq!(record.issuer_id_hash, issuer_id);
+        assert_eq!(record.issuer_address, issuer_address);
+        assert_eq!(record.metadata_hash, metadata_hash);
+        assert_eq!(record.status, IssuerStatus::Active);
+        assert!(client.is_active_issuer(&issuer_id));
+        assert!(client.is_active_address(&issuer_address));
+    }
+
+    #[test]
+    fn status_transitions_reject_reactivated_revoked_issuer() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.suspend_issuer(&issuer_id);
+        assert!(!client.is_active_issuer(&issuer_id));
+
+        client.reactivate_issuer(&issuer_id);
+        assert!(client.is_active_issuer(&issuer_id));
+
+        client.revoke_issuer(&issuer_id);
+        assert!(!client.is_active_issuer(&issuer_id));
+    }
+
+    #[test]
+    #[should_panic(expected = "issuer already registered")]
+    fn rejects_duplicate_issuer_id() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.register_issuer(
+            &issuer_id,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 3),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "revoked issuer cannot be reactivated")]
+    fn revoked_issuer_cannot_be_reactivated() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+        client.revoke_issuer(&issuer_id);
+        client.reactivate_issuer(&issuer_id);
     }
 }

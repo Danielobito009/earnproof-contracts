@@ -1,4 +1,5 @@
 target
 .stellar
 .env
+test_snapshots
 .DS_Store
