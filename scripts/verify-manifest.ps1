@@ -38,6 +38,16 @@ function Assert-Sha256($Name, $Value) {
   }
 }
 
+function Assert-StellarAddress($Name, $Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    throw "$Name address is missing."
+  }
+
+  if ($Value -notmatch "^G[A-Z2-7]{55}$") {
+    throw "$Name address does not look like a Stellar public key: $Value"
+  }
+}
+
 $path = Resolve-Path $Manifest
 $manifestJson = Get-Content $path -Raw | ConvertFrom-Json
 
@@ -52,6 +62,12 @@ if (-not $manifestJson.deployedAt) {
 Assert-ContractId "protocolConfig" $manifestJson.contracts.protocolConfig
 Assert-ContractId "issuerRegistry" $manifestJson.contracts.issuerRegistry
 Assert-ContractId "proofRegistry" $manifestJson.contracts.proofRegistry
+
+if ($manifestJson.initialIssuer) {
+  Assert-StellarAddress "initialIssuer" $manifestJson.initialIssuer.address
+  Assert-Sha256 "initialIssuer issuerIdHash" $manifestJson.initialIssuer.issuerIdHash
+  Assert-Sha256 "initialIssuer metadataHash" $manifestJson.initialIssuer.metadataHash
+}
 
 if ($manifestJson.wasm) {
   Assert-Sha256 "protocolConfig" $manifestJson.wasm.protocolConfig.sha256
