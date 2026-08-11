@@ -1,6 +1,6 @@
 #![no_std]
 
-use earnproof_shared::{IssuerRecord, IssuerStatus};
+use earnproof_shared::{IssuerRecord, IssuerStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contract]
@@ -22,6 +22,7 @@ impl IssuerRegistryContract {
 
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::extend_instance_ttl(env);
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -64,6 +65,8 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .set(&address_key, &issuer_id_hash);
+        Self::extend_issuer_ttl(env.clone(), issuer_id_hash.clone());
+        Self::extend_address_ttl(env, issuer_address);
     }
 
     pub fn update_issuer(env: Env, issuer_id_hash: BytesN<32>, metadata_hash: BytesN<32>) {
@@ -84,6 +87,7 @@ impl IssuerRegistryContract {
         record.metadata_hash = metadata_hash;
         record.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
+        Self::extend_issuer_key_ttl(env, &key);
     }
 
     pub fn suspend_issuer(env: Env, issuer_id_hash: BytesN<32>) {
@@ -127,13 +131,19 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .set(&new_address_key, &issuer_id_hash);
+        Self::extend_issuer_key_ttl(env.clone(), &key);
+        Self::extend_address_ttl(env, new_address);
     }
 
     pub fn get_issuer(env: Env, issuer_id_hash: BytesN<32>) -> IssuerRecord {
-        env.storage()
+        let key = DataKey::Issuer(issuer_id_hash);
+        let record = env
+            .storage()
             .persistent()
-            .get(&DataKey::Issuer(issuer_id_hash))
-            .expect("issuer not found")
+            .get(&key)
+            .expect("issuer not found");
+        Self::extend_issuer_key_ttl(env, &key);
+        record
     }
 
     pub fn is_active_issuer(env: Env, issuer_id_hash: BytesN<32>) -> bool {
@@ -145,7 +155,7 @@ impl IssuerRegistryContract {
         let issuer_id_hash: BytesN<32> = env
             .storage()
             .persistent()
-            .get(&DataKey::AddressIssuer(issuer_address))
+            .get(&DataKey::AddressIssuer(issuer_address.clone()))
             .expect("issuer address not found");
 
         Self::is_active_issuer(env, issuer_id_hash)
@@ -169,6 +179,31 @@ impl IssuerRegistryContract {
         record.status = status;
         record.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
+        Self::extend_issuer_key_ttl(env, &key);
+    }
+
+    fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn extend_issuer_ttl(env: Env, issuer_id_hash: BytesN<32>) {
+        Self::extend_issuer_key_ttl(env, &DataKey::Issuer(issuer_id_hash));
+    }
+
+    fn extend_issuer_key_ttl(env: Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn extend_address_ttl(env: Env, issuer_address: Address) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::AddressIssuer(issuer_address),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
     }
 
     fn require_auth(address: &Address) {
@@ -183,13 +218,16 @@ impl IssuerRegistryContract {
         let issuer_id_hash: BytesN<32> = env
             .storage()
             .persistent()
-            .get(&DataKey::AddressIssuer(issuer_address))
+            .get(&DataKey::AddressIssuer(issuer_address.clone()))
             .expect("issuer address not found");
 
-        env.storage()
+        let record = env
+            .storage()
             .persistent()
             .get(&DataKey::Issuer(issuer_id_hash))
-            .expect("issuer not found")
+            .expect("issuer not found");
+        Self::extend_address_ttl(env, issuer_address);
+        record
     }
 }
 
@@ -197,9 +235,9 @@ impl IssuerRegistryContract {
 mod test {
     extern crate std;
 
-    use super::{IssuerRegistryContract, IssuerRegistryContractClient};
-    use earnproof_shared::IssuerStatus;
-    use soroban_sdk::{Address, BytesN, Env};
+    use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
+    use earnproof_shared::{IssuerStatus, TTL_THRESHOLD_LEDGERS};
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const ISSUER_ONE: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -278,5 +316,29 @@ mod test {
         client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
         client.revoke_issuer(&issuer_id);
         client.reactivate_issuer(&issuer_id);
+    }
+
+    #[test]
+    fn extends_issuer_storage_ttl() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 1);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+
+        env.as_contract(&client.address, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::Issuer(issuer_id.clone()))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::AddressIssuer(issuer_address.clone()))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+        });
     }
 }

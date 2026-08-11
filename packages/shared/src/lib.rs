@@ -2,6 +2,9 @@
 
 use soroban_sdk::{contracttype, Address, BytesN};
 
+pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
+pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssuerStatus {

@@ -9,6 +9,7 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+earnproof-shared.workspace = true
 soroban-sdk.workspace = true
 
 [dev-dependencies]

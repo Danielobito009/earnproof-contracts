@@ -1,6 +1,6 @@
 #![no_std]
 
-use earnproof_shared::{ProofRecord, ProofStatus};
+use earnproof_shared::{ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
 use issuer_registry::IssuerRegistryContractClient;
 use protocol_config::ProtocolConfigContractClient;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env};
@@ -36,6 +36,7 @@ impl ProofRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ProtocolConfig, &protocol_config);
+        Self::extend_instance_ttl(env);
     }
 
     pub fn register_proof(
@@ -90,6 +91,7 @@ impl ProofRegistryContract {
         };
 
         env.storage().persistent().set(&key, &record);
+        Self::extend_proof_key_ttl(env, &key);
     }
 
     pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) {
@@ -101,10 +103,14 @@ impl ProofRegistryContract {
     }
 
     pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> ProofRecord {
-        env.storage()
+        let key = DataKey::Proof(proof_id_hash);
+        let record = env
+            .storage()
             .persistent()
-            .get(&DataKey::Proof(proof_id_hash))
-            .expect("proof not found")
+            .get(&key)
+            .expect("proof not found");
+        Self::extend_proof_key_ttl(env, &key);
+        record
     }
 
     pub fn is_valid_proof(env: Env, proof_id_hash: BytesN<32>) -> bool {
@@ -160,6 +166,19 @@ impl ProofRegistryContract {
         record.status = ProofStatus::Revoked;
         record.revoked_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
+        Self::extend_proof_key_ttl(env, &key);
+    }
+
+    fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn extend_proof_key_ttl(env: Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
     }
 
     fn require_auth(address: &Address) {
@@ -175,11 +194,11 @@ impl ProofRegistryContract {
 mod test {
     extern crate std;
 
-    use super::{ProofRegistryContract, ProofRegistryContractClient};
-    use earnproof_shared::ProofStatus;
+    use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
+    use earnproof_shared::{ProofStatus, TTL_THRESHOLD_LEDGERS};
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{Address, BytesN, Env};
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -328,5 +347,23 @@ mod test {
             &1,
             &2_000,
         );
+    }
+
+    #[test]
+    fn extends_proof_storage_ttl() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let proof_id = bytes(&env, 1);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+
+        env.as_contract(&client.address, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::Proof(proof_id.clone()))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+        });
     }
 }

@@ -1,5 +1,6 @@
 #![no_std]
 
+use earnproof_shared::{TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env};
 
 #[contract]
@@ -56,6 +57,7 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ConfigVersion, &1_u32);
+        Self::extend_instance_ttl(env.clone());
         Initialized { admin }.publish(&env);
     }
 
@@ -104,6 +106,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         SchemaApproved { version }.publish(&env);
     }
@@ -115,6 +118,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &false);
+        Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         SchemaDeprecated { version }.publish(&env);
     }
@@ -124,10 +128,16 @@ impl ProtocolConfigContract {
             return false;
         }
 
-        env.storage()
-            .persistent()
-            .get(&DataKey::SchemaVersion(version))
-            .unwrap_or(false)
+        let key = DataKey::SchemaVersion(version);
+        let approved = env.storage().persistent().get(&key).unwrap_or(false);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        approved
     }
 
     pub fn get_config_version(env: Env) -> u32 {
@@ -148,6 +158,21 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ConfigVersion, &(current + 1));
+        Self::extend_instance_ttl(env);
+    }
+
+    fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn extend_schema_ttl(env: Env, version: u32) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaVersion(version),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
     }
 
     fn require_auth(address: &Address) {
@@ -163,8 +188,9 @@ impl ProtocolConfigContract {
 mod test {
     extern crate std;
 
-    use super::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{Address, Env};
+    use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
+    use earnproof_shared::TTL_THRESHOLD_LEDGERS;
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, Env};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
 
@@ -216,5 +242,21 @@ mod test {
     fn rejects_zero_schema_version() {
         let (_env, client, _admin) = setup();
         client.approve_schema_version(&0);
+    }
+
+    #[test]
+    fn extends_schema_storage_ttl() {
+        let (env, client, _admin) = setup();
+
+        client.approve_schema_version(&7);
+
+        env.as_contract(&client.address, || {
+            assert!(
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::SchemaVersion(7))
+                    > TTL_THRESHOLD_LEDGERS
+            );
+        });
     }
 }
