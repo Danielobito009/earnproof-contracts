@@ -1,6 +1,25 @@
-## Summary
+## Description
 
-Describe the contract change and the issue it resolves.
+Explain what changed, why the change is needed, and its contract or integration impact.
+
+## Related issue
+
+Closes #[issue number]
+
+<!-- Replace [issue number] with the assigned issue number. Example: Closes #2 -->
+
+## Type of change
+
+- [ ] Contract feature
+- [ ] Bug or security fix
+- [ ] Refactor
+- [ ] Documentation
+- [ ] Test, deployment, or build improvement
+
+## Changes made
+
+-
+-
 
 ## Validation
 
@@ -9,10 +28,12 @@ Describe the contract change and the issue it resolves.
 - [ ] `cargo test --workspace`
 - [ ] `cargo build --workspace`
 
-## Security and Privacy
+
+## Security and privacy
 
 - [ ] No secret keys, seed phrases, or deployment keys were added.
 - [ ] No private income data or raw payment history is stored on-chain.
-- [ ] Authorization and invalid-transition behavior is tested.
+- [ ] Security assumptions and trust boundaries are documented.
 - [ ] Documentation matches implemented contract behavior.
+
 
