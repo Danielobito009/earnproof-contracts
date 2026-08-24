@@ -113,3 +113,5 @@ metadata_hash = sha256(canonical_public_issuer_metadata)
 ## On-Chain Data Boundary
 
 Do not send exact income, raw transaction lists, personal names, emails, or full wallet history to contracts. Store only hashes, status, schema version, issuer address, expiration, and timestamps.
+
+For the complete list of every storage key, TTL policy, lifecycle event, and privacy boundary see the [Storage Model](./storage-model.md) reference.
