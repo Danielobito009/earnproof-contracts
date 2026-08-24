@@ -137,6 +137,11 @@ Contracts may store:
 - Sensitive operations should respect protocol pause state.
 - Mainnet deployment should wait for independent review.
 
+## Documentation
+
+- [Storage Model](docs/storage-model.md) — every DataKey variant, TTL policy, lifecycle events, and privacy boundaries
+- [Backend Integration](docs/backend-integration.md) — contract calls and hashing rules for the EarnProof API
+
 ## Related Repositories
 
 - `earnproof-frontend`: Public app, worker dashboard, issuer UI, verifier UI, and admin UI.
