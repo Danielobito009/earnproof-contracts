@@ -31,6 +31,21 @@ unpause()
 
 Admin authorization is required for writes.
 
+### Protocol Config Events
+
+The protocol-config contract emits typed events on every state mutation. Backend indexers should subscribe to these topics for real-time protocol lifecycle tracking.
+
+| Event | Topic | Payload | Emitted by | Fixture |
+| --- | --- | --- | --- | --- |
+| Initialized | `Initialized` | `admin: Address` | `initialize` | [initialized.json](../tests/fixtures/events/protocol-config/v1/initialized.json) |
+| AdminChanged | `AdminChanged` | `new_admin: Address` | `set_admin` | [admin-changed.json](../tests/fixtures/events/protocol-config/v1/admin-changed.json) |
+| Paused | `Paused` | `paused: bool` | `pause` | [paused.json](../tests/fixtures/events/protocol-config/v1/paused.json) |
+| Unpaused | `Unpaused` | `paused: bool` | `unpause` | [unpaused.json](../tests/fixtures/events/protocol-config/v1/unpaused.json) |
+| SchemaApproved | `SchemaApproved` | `version: u32` | `approve_schema_version` | [schema-approved.json](../tests/fixtures/events/protocol-config/v1/schema-approved.json) |
+| SchemaDeprecated | `SchemaDeprecated` | `version: u32` | `deprecate_schema_version` | [schema-deprecated.json](../tests/fixtures/events/protocol-config/v1/schema-deprecated.json) |
+
+See [tests/fixtures/events/](../tests/fixtures/events/) for the fixture schema, versioning rules, and compatibility guarantees.
+
 ## Issuer Registry
 
 Contract responsibility:
@@ -62,6 +77,10 @@ rotate_issuer_address(issuer_id_hash: BytesN<32>, new_address: Address)
 ```
 
 Admin authorization is required for writes.
+
+### Issuer Registry Events
+
+The issuer-registry contract currently emits no typed events. State changes are stored on-chain via `IssuerRecord` updates but are not announced via Soroban event topics. Future contract versions are expected to add events for issuer lifecycle transitions. See [tests/fixtures/events/issuer-registry/](../tests/fixtures/events/issuer-registry/).
 
 ## Proof Registry
 
@@ -98,6 +117,10 @@ admin_revoke_proof(proof_id_hash: BytesN<32>)
 ```
 
 Issuer authorization is required for normal proof registration and revocation. Admin authorization is required for administrative revocation.
+
+### Proof Registry Events
+
+The proof-registry contract currently emits no typed events. Proof lifecycle changes (registration, revocation) are stored on-chain via `ProofRecord` updates but are not announced via Soroban event topics. Future contract versions are expected to add events for proof registration and revocation. See [tests/fixtures/events/proof-registry/](../tests/fixtures/events/proof-registry/).
 
 ## Hashing Rules
 
