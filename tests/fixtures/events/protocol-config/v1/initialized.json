@@ -1,0 +1,17 @@
+{
+  "event": "Initialized",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["Initialized"],
+  "payload": {
+    "admin": {
+      "type": "Address",
+      "description": "Stellar address of the initial protocol administrator.",
+      "example": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  "emitted_by": "initialize",
+  "description": "Emitted when the protocol configuration contract is initialized for the first time.",
+  "compatibility": "stable"
+}
