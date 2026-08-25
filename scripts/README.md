@@ -45,3 +45,29 @@ For the checked-in example manifest:
 ```
 
 The verifier checks the manifest shape and rejects placeholder contract IDs unless `-AllowPlaceholders` is explicitly supplied.
+
+## Live On-Chain Verification
+
+Add `-Live` to perform read-only Stellar CLI checks against deployed contracts:
+
+```powershell
+.\scripts\verify-manifest.ps1 -Manifest scripts\deployment-manifest.testnet.json -Live
+```
+
+This confirms admin addresses, pause state, config version, schema approvals, and cross-contract references without requiring a secret key or signing action.
+
+Options:
+- `-CliPath` — path to `stellar` CLI (default: `stellar`)
+- `-TimeoutSeconds` — per-call timeout (default: 30)
+- `-MaxRetries` — retries on transient RPC failures (default: 3)
+- `-Network` — override manifest network
+
+## Running Tests
+
+```powershell
+pwsh -NonInteractive -File scripts\verify-manifest.tests.ps1
+```
+
+Tests cover offline validation, live happy-path, admin mismatches, paused state,
+schema approval failures, malformed CLI output, timeouts, and transient RPC retries.
+No real network calls are made — all live checks use mock functions.
