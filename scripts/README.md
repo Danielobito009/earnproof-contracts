@@ -32,6 +32,24 @@ The script:
 - registers the backend issuer address before proof anchoring is enabled;
 - writes a manifest with contract IDs, WASM hashes, admin address, schema versions, and CLI command evidence.
 
+## Local Sandbox
+
+```powershell
+pwsh -File scripts/local-sandbox/run-sandbox.ps1
+```
+
+Deploys all three contracts to a local Soroban sandbox and exercises a synthetic proof lifecycle: issuer registration, proof registration, verification, revocation, and pause behaviour. Each step asserts its result, so a run that completes is evidence rather than output.
+
+Requires PowerShell 7 and a running local network (`stellar container start local`). The harness refuses any network other than `local`, reads no credentials, prints no secret, and writes a gitignored disposable manifest.
+
+Smoke test — runs without Docker:
+
+```powershell
+pwsh -File scripts/local-sandbox/run-sandbox.tests.ps1
+```
+
+Full guide: [`docs/local-development.md`](../docs/local-development.md).
+
 ## Verify Manifest
 
 ```powershell
