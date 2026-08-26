@@ -1,6 +1,9 @@
 #![no_std]
 
-use earnproof_shared::{IssuerRecord, IssuerStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{
+    ContractError, IssuerError, IssuerRecord, IssuerStatus, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
+};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contract]
@@ -72,21 +75,22 @@ pub struct IssuerAddressRotated {
 
 #[contractimpl]
 impl IssuerRegistryContract {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
 
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Admin, &admin);
         Self::extend_instance_ttl(env);
+        Ok(())
     }
 
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized")
+            .ok_or(ContractError::NotInitialized)
     }
 
     pub fn register_issuer(
@@ -94,18 +98,18 @@ impl IssuerRegistryContract {
         issuer_id_hash: BytesN<32>,
         issuer_address: Address,
         metadata_hash: BytesN<32>,
-    ) {
-        let admin = Self::get_admin(env.clone());
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
         if env.storage().persistent().has(&key) {
-            panic!("issuer already registered");
+            return Err(IssuerError::IssuerAlreadyRegistered);
         }
 
         let address_key = DataKey::AddressIssuer(issuer_address.clone());
         if env.storage().persistent().has(&address_key) {
-            panic!("issuer address already registered");
+            return Err(IssuerError::IssuerAddressAlreadyRegistered);
         }
 
         let now = env.ledger().timestamp();
@@ -132,10 +136,15 @@ impl IssuerRegistryContract {
             created_at: now,
         }
         .publish(&env);
+        Ok(())
     }
 
-    pub fn update_issuer(env: Env, issuer_id_hash: BytesN<32>, metadata_hash: BytesN<32>) {
-        let admin = Self::get_admin(env.clone());
+    pub fn update_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        metadata_hash: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
@@ -143,10 +152,10 @@ impl IssuerRegistryContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect("issuer not found");
+            .ok_or(IssuerError::IssuerNotFound)?;
 
         if record.status == IssuerStatus::Revoked {
-            panic!("revoked issuer cannot be updated");
+            return Err(IssuerError::IssuerRevoked);
         }
 
         let now = env.ledger().timestamp();
@@ -161,22 +170,27 @@ impl IssuerRegistryContract {
             updated_at: now,
         }
         .publish(&env);
+        Ok(())
     }
 
-    pub fn suspend_issuer(env: Env, issuer_id_hash: BytesN<32>) {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Suspended);
+    pub fn suspend_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
+        Self::set_status(env, issuer_id_hash, IssuerStatus::Suspended)
     }
 
-    pub fn reactivate_issuer(env: Env, issuer_id_hash: BytesN<32>) {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Active);
+    pub fn reactivate_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
+        Self::set_status(env, issuer_id_hash, IssuerStatus::Active)
     }
 
-    pub fn revoke_issuer(env: Env, issuer_id_hash: BytesN<32>) {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Revoked);
+    pub fn revoke_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
+        Self::set_status(env, issuer_id_hash, IssuerStatus::Revoked)
     }
 
-    pub fn rotate_issuer_address(env: Env, issuer_id_hash: BytesN<32>, new_address: Address) {
-        let admin = Self::get_admin(env.clone());
+    pub fn rotate_issuer_address(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        new_address: Address,
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
@@ -184,15 +198,15 @@ impl IssuerRegistryContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect("issuer not found");
+            .ok_or(IssuerError::IssuerNotFound)?;
 
         if record.status == IssuerStatus::Revoked {
-            panic!("revoked issuer cannot rotate address");
+            return Err(IssuerError::IssuerRevoked);
         }
 
         let new_address_key = DataKey::AddressIssuer(new_address.clone());
         if env.storage().persistent().has(&new_address_key) {
-            panic!("issuer address already registered");
+            return Err(IssuerError::IssuerAddressAlreadyRegistered);
         }
 
         let old_address = record.issuer_address.clone();
@@ -216,36 +230,45 @@ impl IssuerRegistryContract {
             updated_at: now,
         }
         .publish(&env);
+        Ok(())
     }
 
-    pub fn get_issuer(env: Env, issuer_id_hash: BytesN<32>) -> IssuerRecord {
+    pub fn get_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<IssuerRecord, IssuerError> {
         let key = DataKey::Issuer(issuer_id_hash);
         let record = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("issuer not found");
+            .ok_or(IssuerError::IssuerNotFound)?;
         Self::extend_issuer_key_ttl(env, &key);
-        record
+        Ok(record)
     }
 
     pub fn is_active_issuer(env: Env, issuer_id_hash: BytesN<32>) -> bool {
-        let record = Self::get_issuer(env, issuer_id_hash);
-        record.status == IssuerStatus::Active
+        match Self::get_issuer(env, issuer_id_hash) {
+            Ok(record) => record.status == IssuerStatus::Active,
+            Err(_) => false,
+        }
     }
 
     pub fn is_active_address(env: Env, issuer_address: Address) -> bool {
-        let issuer_id_hash: BytesN<32> = env
+        let issuer_id_hash: Option<BytesN<32>> = env
             .storage()
             .persistent()
-            .get(&DataKey::AddressIssuer(issuer_address.clone()))
-            .expect("issuer address not found");
+            .get(&DataKey::AddressIssuer(issuer_address.clone()));
 
-        Self::is_active_issuer(env, issuer_id_hash)
+        match issuer_id_hash {
+            Some(id) => Self::is_active_issuer(env, id),
+            None => false,
+        }
     }
 
-    fn set_status(env: Env, issuer_id_hash: BytesN<32>, status: IssuerStatus) {
-        let admin = Self::get_admin(env.clone());
+    fn set_status(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        status: IssuerStatus,
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
@@ -253,10 +276,10 @@ impl IssuerRegistryContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect("issuer not found");
+            .ok_or(IssuerError::IssuerNotFound)?;
 
         if record.status == IssuerStatus::Revoked && status != IssuerStatus::Revoked {
-            panic!("revoked issuer cannot be reactivated");
+            return Err(IssuerError::InvalidTransition);
         }
 
         record.status = status.clone();
@@ -282,6 +305,7 @@ impl IssuerRegistryContract {
             }
             .publish(&env),
         }
+        Ok(())
     }
 
     fn extend_instance_ttl(env: Env) {
@@ -312,20 +336,23 @@ impl IssuerRegistryContract {
         address.require_auth();
     }
 
-    pub fn get_issuer_by_address(env: Env, issuer_address: Address) -> IssuerRecord {
+    pub fn get_issuer_by_address(
+        env: Env,
+        issuer_address: Address,
+    ) -> Result<IssuerRecord, IssuerError> {
         let issuer_id_hash: BytesN<32> = env
             .storage()
             .persistent()
             .get(&DataKey::AddressIssuer(issuer_address.clone()))
-            .expect("issuer address not found");
+            .ok_or(IssuerError::IssuerAddressNotFound)?;
 
         let record = env
             .storage()
             .persistent()
             .get(&DataKey::Issuer(issuer_id_hash))
-            .expect("issuer not found");
+            .ok_or(IssuerError::IssuerNotFound)?;
         Self::extend_address_ttl(env, issuer_address);
-        record
+        Ok(record)
     }
 }
 
@@ -334,7 +361,7 @@ mod test {
     extern crate std;
 
     use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
-    use earnproof_shared::{IssuerStatus, TTL_THRESHOLD_LEDGERS};
+    use earnproof_shared::{IssuerError, IssuerStatus, TTL_THRESHOLD_LEDGERS};
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Events},
         Address, BytesN, Env,
@@ -398,22 +425,22 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "issuer already registered")]
     fn rejects_duplicate_issuer_id() {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
         let issuer_address = Address::from_str(&env, ISSUER_ONE);
 
         client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
-        client.register_issuer(
+
+        let result = client.try_register_issuer(
             &issuer_id,
             &Address::from_str(&env, ISSUER_TWO),
             &bytes(&env, 3),
         );
+        assert_eq!(result, Err(Ok(IssuerError::IssuerAlreadyRegistered)));
     }
 
     #[test]
-    #[should_panic(expected = "revoked issuer cannot be reactivated")]
     fn revoked_issuer_cannot_be_reactivated() {
         let (env, client, _admin) = setup();
         let issuer_id = bytes(&env, 1);
@@ -421,7 +448,9 @@ mod test {
 
         client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
         client.revoke_issuer(&issuer_id);
-        client.reactivate_issuer(&issuer_id);
+
+        let result = client.try_reactivate_issuer(&issuer_id);
+        assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
     }
 
     #[test]
