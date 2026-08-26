@@ -141,6 +141,7 @@ Contracts may store:
 
 - [Storage Model](docs/storage-model.md) — every DataKey variant, TTL policy, lifecycle events, and privacy boundaries
 - [Backend Integration](docs/backend-integration.md) — contract calls and hashing rules for the EarnProof API
+- [Threat Model and Security Review Checklist](docs/threat-model.md) — comprehensive security analysis, threat enumeration, controls, and mainnet release gates
 
 ## Related Repositories
 
