@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Tests for verify-manifest.ps1 — covers both offline shape checks and live
