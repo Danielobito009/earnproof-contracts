@@ -1,0 +1,107 @@
+name: Release metadata
+
+# Validates the release notes and the compatibility policy.
+#
+# The point of this job is that a release note is only useful if it is true.
+# It reconciles every note against the deployment manifest, so a recorded hash
+# has to be the hash of the artifact that was actually deployed — and it runs
+# the verifier's own test suite, so the reconciliation logic is itself covered.
+
+on:
+  pull_request:
+    paths:
+      - "docs/releases/**"
+      - "docs/compatibility.md"
+      - "scripts/verify-manifest.ps1"
+      - "scripts/verify-manifest.tests.ps1"
+      - "scripts/deployment-manifest.*.json"
+      - ".github/workflows/release-metadata.yml"
+  push:
+    branches: [main]
+
+jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The verifier and its tests are PowerShell. ubuntu-latest ships pwsh.
+      - name: Validate every release note against the manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $notes = Get-ChildItem docs/releases -Filter *.md |
+                   Where-Object { $_.Name -ne "TEMPLATE.md" }
+
+          if ($notes.Count -eq 0) {
+            throw "No release notes found under docs/releases/."
+          }
+
+          foreach ($note in $notes) {
+            Write-Host "--- $($note.Name)"
+            ./scripts/verify-manifest.ps1 `
+              -Manifest scripts/deployment-manifest.testnet.json `
+              -Release $note.FullName
+          }
+
+      - name: The template must not validate as a release
+        shell: pwsh
+        run: |
+          # The template is full of placeholders. If it ever passed validation,
+          # a note copied from it and left unfilled would pass too.
+          $ErrorActionPreference = "Continue"
+          ./scripts/verify-manifest.ps1 `
+            -Manifest scripts/deployment-manifest.testnet.json `
+            -Release docs/releases/TEMPLATE.md 2>$null
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "::error::docs/releases/TEMPLATE.md passed release validation; placeholders are not being rejected"
+            exit 1
+          }
+          Write-Host "Template correctly rejected."
+
+      - name: Verifier test suite
+        shell: pwsh
+        run: ./scripts/verify-manifest.tests.ps1
+
+      - name: Release notes reference only existing paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $failed = $false
+
+          $docs = @(Get-ChildItem docs/releases -Filter *.md) + @(Get-Item docs/compatibility.md)
+
+          foreach ($doc in $docs) {
+            $text = Get-Content $doc.FullName -Raw
+            $links = [regex]::Matches($text, '\]\((?<path>[^)#][^)]*)\)')
+
+            foreach ($link in $links) {
+              $target = $link.Groups["path"].Value -replace "#.*$", ""
+              if ($target -match "^https?://") { continue }
+
+              $resolved = Join-Path $doc.DirectoryName $target
+              if (-not (Test-Path $resolved)) {
+                Write-Host "::error file=$($doc.FullName)::broken link: $target"
+                $failed = $true
+              }
+            }
+          }
+
+          if ($failed) { exit 1 }
+          Write-Host "All release documentation links resolve."
+
+  contracts:
+    # The policy classifies changes to the contracts themselves, so the
+    # workspace must be green for a release note about it to mean anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo build --workspace
