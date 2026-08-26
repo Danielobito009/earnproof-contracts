@@ -46,6 +46,18 @@ For the checked-in example manifest:
 
 The verifier checks the manifest shape and rejects placeholder contract IDs unless `-AllowPlaceholders` is explicitly supplied.
 
+## Verify a Release Note
+
+```powershell
+.\scripts\verify-manifest.ps1 -Manifest scripts\deployment-manifest.testnet.json -Release docs\releases\v0.1.0.md
+```
+
+With `-Release`, the verifier additionally reconciles a release note against the manifest. It checks that every required section and field is present, that the contract IDs and WASM hashes the note declares are the ones actually deployed, that no hash appears in the note which is absent from the manifest, and that no credential-shaped material has crept in.
+
+Recording a hash is not the point — recording the *deployed* hash is. A note that lists an artifact which was never deployed is worse than no note, because it reads as evidence.
+
+Breaking releases carry an extra requirement: the note must name an approving maintainer and provide substantive migration, rollback, and containment sections. See [`docs/compatibility.md`](../docs/compatibility.md).
+
 ## Live On-Chain Verification
 
 Add `-Live` to perform read-only Stellar CLI checks against deployed contracts:
