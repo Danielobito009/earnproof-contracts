@@ -2,6 +2,63 @@
 
 This document lists the contract calls the EarnProof API should use when writing proof commitments, reading issuer status, and validating public proof state.
 
+## Error Handling
+
+All contracts return typed Soroban error codes instead of panic strings. Backend integrations must map these machine-readable codes to appropriate HTTP status codes and user-facing messages.
+
+### Error Code Ranges
+
+Error codes are allocated to prevent collisions across contracts:
+
+- **Common errors (1-99)**: Shared across all contracts
+- **Protocol Config errors (100-199)**: Protocol-specific errors
+- **Issuer Registry errors (200-299)**: Issuer-specific errors
+- **Proof Registry errors (300-399)**: Proof-specific errors
+
+### Common Contract Errors (1-99)
+
+| Code | Error Name | Description | Suggested HTTP Status | Safe API Response |
+|------|------------|-------------|----------------------|-------------------|
+| 1 | AlreadyInitialized | Contract already initialized | 409 Conflict | "Contract is already initialized" |
+| 2 | NotInitialized | Contract not initialized | 500 Internal Server Error | "Service temporarily unavailable" |
+| 20 | Unauthorized | Caller lacks required authorization | 403 Forbidden | "Insufficient permissions" |
+| 40 | AlreadyExists | Resource already exists | 409 Conflict | "Resource already exists" |
+| 41 | NotFound | Resource not found | 404 Not Found | "Resource not found" |
+| 42 | InvalidState | Operation invalid for current state | 400 Bad Request | "Operation not permitted in current state" |
+| 60 | InvalidInput | Invalid input parameters | 400 Bad Request | "Invalid input provided" |
+| 80 | ProtocolPaused | Protocol is paused | 503 Service Unavailable | "Service temporarily paused" |
+
+### Issuer Registry Errors (200-299)
+
+| Code | Error Name | Description | Suggested HTTP Status | Safe API Response |
+|------|------------|-------------|----------------------|-------------------|
+| 200 | IssuerAlreadyRegistered | Issuer ID already registered | 409 Conflict | "Issuer already registered" |
+| 201 | IssuerNotFound | Issuer not found | 404 Not Found | "Issuer not found" |
+| 202 | IssuerAddressAlreadyRegistered | Issuer address already in use | 409 Conflict | "Issuer address already registered" |
+| 203 | IssuerAddressNotFound | Issuer address not found | 404 Not Found | "Issuer address not found" |
+| 204 | IssuerRevoked | Issuer has been revoked | 403 Forbidden | "Issuer has been revoked" |
+| 205 | IssuerInactive | Issuer is not active | 403 Forbidden | "Issuer is not active" |
+| 206 | InvalidTransition | Invalid status transition | 400 Bad Request | "Invalid status transition" |
+
+### Proof Registry Errors (300-399)
+
+| Code | Error Name | Description | Suggested HTTP Status | Safe API Response |
+|------|------------|-------------|----------------------|-------------------|
+| 300 | ProofAlreadyRegistered | Proof ID already registered | 409 Conflict | "Proof already registered" |
+| 301 | ProofNotFound | Proof not found | 404 Not Found | "Proof not found" |
+| 302 | ProofAlreadyRevoked | Proof has already been revoked | 400 Bad Request | "Proof already revoked" |
+| 303 | ProofExpired | Proof expiration is invalid | 400 Bad Request | "Invalid proof expiration" |
+| 304 | InvalidSchemaVersion | Schema version is invalid | 400 Bad Request | "Invalid schema version" |
+| 305 | SchemaVersionNotApproved | Schema version not approved | 400 Bad Request | "Schema version not approved" |
+
+### Error Handling Best Practices
+
+1. **Never expose raw contract errors to end users**: Map error codes to safe, user-friendly messages
+2. **Log full error context server-side**: Include contract error codes, transaction IDs, and context for debugging
+3. **No sensitive data in error messages**: Do not include personal information, wallet addresses, or internal IDs in user-facing errors
+4. **Consistent HTTP status codes**: Use the suggested HTTP status codes for consistency
+5. **Graceful degradation**: Handle unexpected error codes gracefully with generic error messages
+
 ## Protocol Config
 
 Contract responsibility:
