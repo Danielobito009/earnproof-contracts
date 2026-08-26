@@ -4,7 +4,8 @@ members = [
   "contracts/issuer-registry",
   "contracts/proof-registry",
   "packages/shared",
-  "tests/event-fixtures"
+  "tests/event-fixtures",
+  "tests/emergency"
 ]
 resolver = "2"
 
