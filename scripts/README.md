@@ -32,6 +32,24 @@ The script:
 - registers the backend issuer address before proof anchoring is enabled;
 - writes a manifest with contract IDs, WASM hashes, admin address, schema versions, and CLI command evidence.
 
+## Local Sandbox
+
+```powershell
+pwsh -File scripts/local-sandbox/run-sandbox.ps1
+```
+
+Deploys all three contracts to a local Soroban sandbox and exercises a synthetic proof lifecycle: issuer registration, proof registration, verification, revocation, and pause behaviour. Each step asserts its result, so a run that completes is evidence rather than output.
+
+Requires PowerShell 7 and a running local network (`stellar container start local`). The harness refuses any network other than `local`, reads no credentials, prints no secret, and writes a gitignored disposable manifest.
+
+Smoke test — runs without Docker:
+
+```powershell
+pwsh -File scripts/local-sandbox/run-sandbox.tests.ps1
+```
+
+Full guide: [`docs/local-development.md`](../docs/local-development.md).
+
 ## Verify Manifest
 
 ```powershell
@@ -45,6 +63,18 @@ For the checked-in example manifest:
 ```
 
 The verifier checks the manifest shape and rejects placeholder contract IDs unless `-AllowPlaceholders` is explicitly supplied.
+
+## Verify a Release Note
+
+```powershell
+.\scripts\verify-manifest.ps1 -Manifest scripts\deployment-manifest.testnet.json -Release docs\releases\v0.1.0.md
+```
+
+With `-Release`, the verifier additionally reconciles a release note against the manifest. It checks that every required section and field is present, that the contract IDs and WASM hashes the note declares are the ones actually deployed, that no hash appears in the note which is absent from the manifest, and that no credential-shaped material has crept in.
+
+Recording a hash is not the point — recording the *deployed* hash is. A note that lists an artifact which was never deployed is worse than no note, because it reads as evidence.
+
+Breaking releases carry an extra requirement: the note must name an approving maintainer and provide substantive migration, rollback, and containment sections. See [`docs/compatibility.md`](../docs/compatibility.md).
 
 ## Live On-Chain Verification
 

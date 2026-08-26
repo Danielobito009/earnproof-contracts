@@ -1,0 +1,89 @@
+name: Local sandbox harness
+
+# Validates the sandbox harness from a clean environment.
+#
+# The job deliberately does NOT start a Stellar container or perform a
+# deployment. What it proves is that the harness is safe and structurally
+# correct to run: it parses, its network guard rejects every shared network
+# before any side effect, it reads and prints no credentials, and its lifecycle
+# covers every documented step.
+#
+# A deployment check would need Docker and several minutes, and it would prove
+# something different. Keeping the two separate means this job stays fast and
+# its failures stay unambiguous.
+
+on:
+  pull_request:
+    paths:
+      - "scripts/local-sandbox/**"
+      - "docs/local-development.md"
+      - "scripts/README.md"
+      - ".github/workflows/local-sandbox.yml"
+  push:
+    branches: [main]
+
+jobs:
+  harness-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest ships pwsh, which is what the harness requires.
+      - name: Smoke test
+        shell: pwsh
+        run: ./scripts/local-sandbox/run-sandbox.tests.ps1
+
+      - name: The harness must refuse a shared network
+        shell: pwsh
+        run: |
+          # Asserted here as well as in the smoke test. This is the property
+          # that keeps throwaway keys and unreviewed artifacts off testnet, so
+          # it is worth failing the build twice over.
+          $ErrorActionPreference = "Continue"
+
+          foreach ($network in @("testnet", "futurenet", "mainnet", "public")) {
+            ./scripts/local-sandbox/run-sandbox.ps1 -Network $network 2>$null
+
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "::error::the harness accepted -Network $network"
+              exit 1
+            }
+            Write-Host "correctly refused -Network $network"
+          }
+
+      - name: Documentation links resolve
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $failed = $false
+          $doc = Get-Item docs/local-development.md
+          $text = Get-Content $doc.FullName -Raw
+
+          foreach ($link in [regex]::Matches($text, '\]\((?<path>[^)#][^)]*)\)')) {
+            $target = $link.Groups["path"].Value -replace "#.*$", ""
+            if ($target -match "^https?://") { continue }
+
+            $resolved = Join-Path $doc.DirectoryName $target
+            if (-not (Test-Path $resolved)) {
+              Write-Host "::error file=$($doc.FullName)::broken link: $target"
+              $failed = $true
+            }
+          }
+
+          if ($failed) { exit 1 }
+          Write-Host "All local-development links resolve."
+
+  contracts:
+    # The harness deploys these contracts, so the workspace must be green for a
+    # sandbox run to mean anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo build --workspace

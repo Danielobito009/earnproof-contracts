@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Tests for verify-manifest.ps1 — covers both offline shape checks and live
@@ -420,6 +420,161 @@ Invoke-Test "live mode initialIssuer NotFound fails" {
   $mock["$IR_ID|get_issuer_status|$ISSUER_ADDR"] = "NotFound"
 
   $output = Invoke-VerifyWithMock -MockTable $mock -ExpectFailure -FailPattern "(?i)(NotFound|FAIL)"
+}
+
+# ---------------------------------------------------------------------------
+# Release metadata validation (-Release)
+# ---------------------------------------------------------------------------
+# These cover the acceptance criterion that manifest verification rejects an
+# artifact whose declared release metadata does not match what was deployed.
+#
+# Each case mutates a copy of the real release note rather than using a
+# hand-written stub, so the fixture cannot drift away from the note the project
+# actually ships.
+
+$ReleaseNote = Join-Path $ScriptDir "..\docs\releases\v0.1.0.md"
+
+# Writes a mutated copy of the release note to a temp file and returns its path.
+function New-MutatedRelease {
+  param([scriptblock]$Mutate)
+
+  $text = Get-Content $ReleaseNote -Raw
+  $mutated = & $Mutate $text
+  $temp = [System.IO.Path]::GetTempFileName() + ".md"
+  Set-Content -Path $temp -Value $mutated -Encoding UTF8
+  return $temp
+}
+
+# Runs verify-manifest.ps1 in a child process and asserts it succeeded.
+function Assert-ExitZero {
+  param([string[]]$ScriptArgs, [string]$OutputPattern = "")
+
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
+  if (-not $psi.FileName) { $psi.FileName = "pwsh" }
+  $psi.Arguments = "-NonInteractive -File `"$VerifyScript`" " + ($ScriptArgs -join " ")
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $stdout = $proc.StandardOutput.ReadToEnd()
+  $stderr = $proc.StandardError.ReadToEnd()
+  $proc.WaitForExit()
+
+  if ($proc.ExitCode -ne 0) {
+    throw "Expected exit code 0 but got $($proc.ExitCode).`nOutput: $stdout`n$stderr"
+  }
+
+  if ($OutputPattern -and $stdout -notmatch $OutputPattern) {
+    throw "Exited 0 but output did not match '$OutputPattern'.`nOutput: $stdout"
+  }
+}
+
+# 12. A release note matching the manifest passes
+Invoke-Test "release note matching the manifest passes" {
+  Assert-ExitZero `
+    -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$ReleaseNote`"") `
+    -OutputPattern "(?i)release metadata matches"
+}
+
+# 13. A WASM hash absent from the manifest is rejected
+Invoke-Test "release note with an unknown WASM hash fails" {
+  $temp = New-MutatedRelease {
+    param($t)
+    $t -replace "dd0a2d58bc634f09f94f92b09811714a25f36f4e0bd34c10dbac33238c84d594",
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)(hash|manifest)"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 14. A contract ID that was not deployed is rejected
+Invoke-Test "release note omitting a deployed contract ID fails" {
+  $temp = New-MutatedRelease {
+    param($t)
+    $t -replace "CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK",
+    "CDXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)(contract ID|proofRegistry)"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 15. A missing required section is rejected
+Invoke-Test "release note missing a required section fails" {
+  $temp = New-MutatedRelease { param($t) $t -replace "## Rollback", "## Notes" }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)Rollback"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 16. A malformed commit field is rejected
+Invoke-Test "release note with a short commit fails" {
+  $temp = New-MutatedRelease {
+    param($t)
+    $t -replace "\*\*Commit:\*\* 09f9841c9af78e67c90f0eaab1039052b17b9a03", "**Commit:** 09f9841"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)Commit"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 17. A leaked Stellar secret seed is rejected
+Invoke-Test "release note containing a secret seed fails" {
+  # Synthetic, seed-shaped value. Never a real key.
+  $temp = New-MutatedRelease {
+    param($t)
+    $t + "`n`nDeployer seed: SCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR`n"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)secret"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 18. A credential-shaped assignment is rejected
+Invoke-Test "release note containing an API key assignment fails" {
+  $temp = New-MutatedRelease {
+    param($t)
+    $t + "`n`napi_key: not-a-real-key-but-shaped-like-one`n"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)credential"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 19. A breaking release without a named approver is rejected
+Invoke-Test "breaking release without an approver fails" {
+  $temp = New-MutatedRelease {
+    param($t)
+    ($t -replace "\*\*Classification:\*\* additive", "**Classification:** breaking") `
+      -replace "\*\*Breaking change approved by:\*\* Not required.*", "**Breaking change approved by:** not required"
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$TestnetManifest`"", "-Release `"$temp`"") `
+      -OutputPattern "(?i)approving maintainer"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
 }
 
 # ---------------------------------------------------------------------------

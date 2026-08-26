@@ -7,7 +7,13 @@ param(
   [string]$CliPath = "stellar",
   [int]$TimeoutSeconds = 30,
   [int]$MaxRetries = 3,
-  [string]$Network = ""   # defaults to manifest network if empty
+  [string]$Network = "",   # defaults to manifest network if empty
+
+  # Path to a release note under docs/releases/. When supplied, the note is
+  # validated against this manifest: required fields must be present, and the
+  # declared contract IDs and WASM hashes must match what was deployed.
+  # See docs/compatibility.md.
+  [string]$Release = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -244,6 +250,128 @@ if (-not $manifestJson.schemaVersions -or $manifestJson.schemaVersions.Count -eq
 }
 
 Write-Host "Deployment manifest shape is valid: $path"
+
+# ---------------------------------------------------------------------------
+# Release metadata validation (only when -Release is passed)
+# ---------------------------------------------------------------------------
+# A release note that records a hash is not evidence; the recorded hash has to
+# be the hash of the artifact that was actually deployed. This block reconciles
+# the note against the manifest and refuses a mismatch.
+
+if ($Release) {
+  $releasePath = Resolve-Path $Release
+  $releaseText = Get-Content $releasePath -Raw
+
+  # --- Required fields -----------------------------------------------------
+  # Kept in step with docs/releases/TEMPLATE.md. A missing section is an
+  # incomplete release, not a stylistic difference.
+  $requiredSections = @(
+    "## Toolchain",
+    "## Artifacts",
+    "## Changes",
+    "## Migration",
+    "## Backend compatibility",
+    "## Rollback",
+    "## Containment",
+    "## Governance"
+  )
+
+  foreach ($section in $requiredSections) {
+    if ($releaseText -notmatch [regex]::Escape($section)) {
+      throw "Release note is missing the required section '$section': $releasePath"
+    }
+  }
+
+  $requiredFields = @(
+    @{ Name = "Release";        Pattern = "\*\*Release:\*\*\s*\S+" },
+    @{ Name = "Date";           Pattern = "\*\*Date:\*\*\s*\d{4}-\d{2}-\d{2}" },
+    @{ Name = "Commit";         Pattern = "\*\*Commit:\*\*\s*[0-9a-f]{40}" },
+    @{ Name = "Classification"; Pattern = "\*\*Classification:\*\*\s*(additive|semantic|breaking)" }
+  )
+
+  foreach ($field in $requiredFields) {
+    if ($releaseText -notmatch $field.Pattern) {
+      throw "Release note is missing or malformed field '$($field.Name)': $releasePath"
+    }
+  }
+
+  # --- Credential scan -----------------------------------------------------
+  # A release note is published, and publication is irreversible. The policy in
+  # docs/compatibility.md is enforced here rather than left to review.
+  if ($releaseText -match "\bS[A-Z2-7]{55}\b") {
+    throw "Release note appears to contain a Stellar secret seed: $releasePath"
+  }
+
+  $credentialPatterns = @(
+    "(?i)(private[_ -]?key|secret[_ -]?key|seed[_ -]?phrase|mnemonic)\s*[:=]\s*\S+",
+    "(?i)(api[_ -]?key|access[_ -]?token|bearer)\s*[:=]\s*\S+"
+  )
+
+  foreach ($pattern in $credentialPatterns) {
+    if ($releaseText -match $pattern) {
+      throw "Release note appears to contain credential material: $releasePath"
+    }
+  }
+
+  # --- Reconciliation against the manifest ---------------------------------
+  # The core check. A declared artifact that was not the deployed one makes the
+  # whole note misleading, which is worse than having no note at all.
+  $contractPairs = @(
+    @{ Name = "protocolConfig"; Id = $manifestJson.contracts.protocolConfig; Sha = $manifestJson.wasm.protocolConfig.sha256 },
+    @{ Name = "issuerRegistry"; Id = $manifestJson.contracts.issuerRegistry; Sha = $manifestJson.wasm.issuerRegistry.sha256 },
+    @{ Name = "proofRegistry";  Id = $manifestJson.contracts.proofRegistry;  Sha = $manifestJson.wasm.proofRegistry.sha256 }
+  )
+
+  foreach ($pair in $contractPairs) {
+    if ($pair.Id -and -not $AllowPlaceholders) {
+      if ($releaseText -notmatch [regex]::Escape($pair.Id)) {
+        throw "Release note does not record the deployed $($pair.Name) contract ID $($pair.Id): $releasePath"
+      }
+    }
+
+    if ($pair.Sha -and -not $AllowPlaceholders) {
+      if ($releaseText -notmatch [regex]::Escape($pair.Sha)) {
+        throw "Release note does not record the deployed $($pair.Name) WASM hash $($pair.Sha): $releasePath"
+      }
+    }
+  }
+
+  # A hash present in the note but absent from the manifest means the note
+  # describes an artifact this deployment does not contain.
+  $manifestHashes = @($contractPairs | ForEach-Object { $_.Sha } | Where-Object { $_ })
+  $noteHashes = [regex]::Matches($releaseText, "\b[a-f0-9]{64}\b") |
+    ForEach-Object { $_.Value } |
+    Select-Object -Unique
+
+  foreach ($noteHash in $noteHashes) {
+    if ($manifestHashes -notcontains $noteHash) {
+      throw "Release note records WASM hash $noteHash, which is not in the manifest: $releasePath"
+    }
+  }
+
+  # --- Breaking-change governance ------------------------------------------
+  # docs/compatibility.md requires four things before a breaking artifact ships.
+  # Enforced here so the requirement is not merely stated.
+  if ($releaseText -match "\*\*Classification:\*\*\s*breaking") {
+    if ($releaseText -notmatch "(?i)\*\*Breaking change approved by:\*\*\s*(?!not required)\S+") {
+      throw "A breaking release must name the approving maintainer: $releasePath"
+    }
+
+    foreach ($required in @("## Migration", "## Rollback", "## Containment")) {
+      $body = ($releaseText -split [regex]::Escape($required))[1]
+      if (-not $body) {
+        throw "A breaking release must document '$required': $releasePath"
+      }
+
+      $firstParagraph = ($body -split "`n##")[0].Trim()
+      if ($firstParagraph.Length -lt 20) {
+        throw "A breaking release needs substantive content under '$required': $releasePath"
+      }
+    }
+  }
+
+  Write-Host "Release metadata matches the manifest: $releasePath"
+}
 
 # ---------------------------------------------------------------------------
 # Live on-chain checks (only when -Live is passed)
