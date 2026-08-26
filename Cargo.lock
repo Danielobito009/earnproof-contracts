@@ -717,6 +717,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "event-tests"
+version = "0.1.0"
+dependencies = [
+ "earnproof-shared",
+ "issuer-registry",
+ "proof-registry",
+ "protocol-config",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
