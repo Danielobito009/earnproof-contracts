@@ -646,7 +646,7 @@ Before mainnet deployment, the following gates must be satisfied:
   - Community notice period
   - Rollback procedure
   - Backwards compatibility requirements
-- **Deliverable**: `docs/upgrade-policy.md`
+- **Deliverable**: Upgrade policy document (docs/upgrade-policy.md)
 
 ### 4. Monitoring and Incident Response
 

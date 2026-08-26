@@ -426,7 +426,9 @@ Test inventory at this commit:
 | `issuer-registry` | `contracts/issuer-registry/src/lib.rs` | 15 |
 | `proof-registry` | `contracts/proof-registry/src/lib.rs` | 8 |
 | Event fixtures | `tests/event-fixtures/src/lib.rs` | 13 |
-| **Total** | | **41** |
+| Event assertions | `tests/events/src/lib.rs` | 50 |
+| Emergency and recovery | `tests/emergency/src/lib.rs` | 30 |
+| **Total** | | **121** |
 
 Manifest verification (PowerShell, no credentials required):
 
