@@ -1,0 +1,16 @@
+[package]
+name = "resource-budget-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+protocol-config = { path = "../../contracts/protocol-config" }
+issuer-registry = { path = "../../contracts/issuer-registry" }
+proof-registry = { path = "../../contracts/proof-registry" }
+earnproof-shared = { path = "../../packages/shared" }
+
+[dev-dependencies]
+
+[lib]
+doctest = false
