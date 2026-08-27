@@ -249,10 +249,7 @@ fn rotating_an_issuer_address_during_pause_releases_the_old_mapping() {
 
     assert!(deployment.issuers.is_active_address(&replacement));
     assert!(
-        deployment
-            .issuers
-            .try_is_active_address(&compromised)
-            .is_err(),
+        !deployment.issuers.is_active_address(&compromised),
         "the rotated-out address must no longer resolve to an issuer"
     );
 }
