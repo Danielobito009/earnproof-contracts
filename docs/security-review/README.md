@@ -428,7 +428,9 @@ Test inventory at this commit:
 | Event fixtures | `tests/event-fixtures/src/lib.rs` | 13 |
 | Event assertions | `tests/events/src/lib.rs` | 50 |
 | Emergency and recovery | `tests/emergency/src/lib.rs` | 30 |
-| **Total** | | **121** |
+| Cross-contract atomicity | `tests/cross-contract/src/lib.rs` | 33 |
+| Resource budgets | `tests/budgets/src/lib.rs` | 17 |
+| **Total** | | **171** |
 
 Manifest verification (PowerShell, no credentials required):
 
