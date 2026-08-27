@@ -6,8 +6,9 @@ members = [
   "packages/shared",
   "tests/event-fixtures",
   "tests/events",
-  "tests/emergency"
-  "tests/budgets"
+  "tests/emergency",
+  "tests/budgets",
+  "tests/cross-contract"
 ]
 resolver = "2"
 
