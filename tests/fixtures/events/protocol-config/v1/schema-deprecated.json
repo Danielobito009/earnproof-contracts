@@ -1,0 +1,17 @@
+{
+  "event": "SchemaDeprecated",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SchemaDeprecated"],
+  "payload": {
+    "version": {
+      "type": "U32",
+      "description": "Schema version number that has been deprecated and is no longer valid for proof registration.",
+      "example": 1
+    }
+  },
+  "emitted_by": "deprecate_schema_version",
+  "description": "Emitted when a schema version is deprecated and rejected for future proof registrations.",
+  "compatibility": "stable"
+}

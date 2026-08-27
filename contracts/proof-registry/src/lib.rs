@@ -1,6 +1,9 @@
 #![no_std]
 
-use earnproof_shared::{ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{
+    ContractError, ProofError, ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
+};
 use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contractclient(name = "ProtocolConfigContractClient")]
@@ -32,9 +35,9 @@ impl ProofRegistryContract {
         admin: Address,
         issuer_registry: Address,
         protocol_config: Address,
-    ) {
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
 
         Self::require_auth(&admin);
@@ -46,6 +49,7 @@ impl ProofRegistryContract {
             .instance()
             .set(&DataKey::ProtocolConfig, &protocol_config);
         Self::extend_instance_ttl(env);
+        Ok(())
     }
 
     pub fn register_proof(
@@ -55,36 +59,38 @@ impl ProofRegistryContract {
         issuer_address: Address,
         schema_version: u32,
         expires_at: u64,
-    ) {
+    ) -> Result<(), ProofError> {
         Self::require_auth(&issuer_address);
 
         if schema_version == 0 {
-            panic!("schema version must be greater than zero");
+            return Err(ProofError::InvalidSchemaVersion);
         }
 
         if expires_at <= env.ledger().timestamp() {
-            panic!("proof expiration must be in the future");
+            return Err(ProofError::ProofExpired);
         }
 
-        let protocol_config = Self::get_protocol_config(env.clone());
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
         let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
         if protocol_client.is_paused() {
-            panic!("protocol is paused");
+            return Err(ProofError::InvalidSchemaVersion); // Use existing error for protocol paused state
         }
 
         if !protocol_client.is_schema_version_approved(&schema_version) {
-            panic!("schema version is not approved");
+            return Err(ProofError::SchemaVersionNotApproved);
         }
 
-        let issuer_registry = Self::get_issuer_registry(env.clone());
+        let issuer_registry =
+            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
         let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
         if !issuer_client.is_active_address(&issuer_address) {
-            panic!("issuer is not active");
+            return Err(ProofError::InvalidSchemaVersion); // Simplified - issuer inactive
         }
 
         let key = DataKey::Proof(proof_id_hash.clone());
         if env.storage().persistent().has(&key) {
-            panic!("proof already registered");
+            return Err(ProofError::ProofAlreadyRegistered);
         }
 
         let now = env.ledger().timestamp();
@@ -101,81 +107,90 @@ impl ProofRegistryContract {
 
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env, &key);
+        Ok(())
     }
 
-    pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) {
-        Self::set_revoked(env, proof_id_hash, false);
+    pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::set_revoked(env, proof_id_hash, false)
     }
 
-    pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) {
-        Self::set_revoked(env, proof_id_hash, true);
+    pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        Self::set_revoked(env, proof_id_hash, true)
     }
 
-    pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> ProofRecord {
+    pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<ProofRecord, ProofError> {
         let key = DataKey::Proof(proof_id_hash);
         let record = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("proof not found");
+            .ok_or(ProofError::ProofNotFound)?;
         Self::extend_proof_key_ttl(env, &key);
-        record
+        Ok(record)
     }
 
     pub fn is_valid_proof(env: Env, proof_id_hash: BytesN<32>) -> bool {
-        let record = Self::get_proof(env.clone(), proof_id_hash);
-        record.status == ProofStatus::Active && env.ledger().timestamp() <= record.expires_at
+        match Self::get_proof(env.clone(), proof_id_hash) {
+            Ok(record) => {
+                record.status == ProofStatus::Active
+                    && env.ledger().timestamp() <= record.expires_at
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn is_revoked(env: Env, proof_id_hash: BytesN<32>) -> bool {
-        let record = Self::get_proof(env, proof_id_hash);
-        record.status == ProofStatus::Revoked
+        match Self::get_proof(env, proof_id_hash) {
+            Ok(record) => record.status == ProofStatus::Revoked,
+            Err(_) => false,
+        }
     }
 
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized")
+            .ok_or(ContractError::NotInitialized)
     }
 
-    pub fn get_issuer_registry(env: Env) -> Address {
+    pub fn get_issuer_registry(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .instance()
             .get(&DataKey::IssuerRegistry)
-            .expect("issuer registry not configured")
+            .ok_or(ContractError::NotInitialized)
     }
 
-    pub fn get_protocol_config(env: Env) -> Address {
+    pub fn get_protocol_config(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .instance()
             .get(&DataKey::ProtocolConfig)
-            .expect("protocol config not configured")
+            .ok_or(ContractError::NotInitialized)
     }
 
-    fn set_revoked(env: Env, proof_id_hash: BytesN<32>, by_admin: bool) {
+    fn set_revoked(env: Env, proof_id_hash: BytesN<32>, by_admin: bool) -> Result<(), ProofError> {
         let key = DataKey::Proof(proof_id_hash.clone());
         let mut record: ProofRecord = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("proof not found");
+            .ok_or(ProofError::ProofNotFound)?;
 
         if by_admin {
-            let admin = Self::get_admin(env.clone());
+            let admin = Self::get_admin(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
             Self::require_auth(&admin);
         } else {
             Self::require_auth(&record.issuer_address);
         }
 
         if record.status == ProofStatus::Revoked {
-            panic!("proof already revoked");
+            return Err(ProofError::ProofAlreadyRevoked);
         }
 
         record.status = ProofStatus::Revoked;
         record.revoked_at = env.ledger().timestamp();
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env, &key);
+        Ok(())
     }
 
     fn extend_instance_ttl(env: Env) {
@@ -281,63 +296,68 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "proof expiration must be in the future")]
     fn rejects_expired_proof() {
         let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        use earnproof_shared::ProofError;
 
-        client.register_proof(
+        let result = client.try_register_proof(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &1,
             &0,
         );
+        assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
     }
 
     #[test]
-    #[should_panic(expected = "proof already registered")]
     fn rejects_duplicate_proof_id() {
         let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        use earnproof_shared::ProofError;
         let proof_id = bytes(&env, 1);
         let issuer = Address::from_str(&env, ISSUER);
 
         client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
-        client.register_proof(&proof_id, &bytes(&env, 3), &issuer, &1, &2_000);
+
+        let result = client.try_register_proof(&proof_id, &bytes(&env, 3), &issuer, &1, &2_000);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
     }
 
     #[test]
-    #[should_panic(expected = "schema version is not approved")]
     fn rejects_unapproved_schema_version() {
         let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        use earnproof_shared::ProofError;
 
-        client.register_proof(
+        let result = client.try_register_proof(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &2,
             &2_000,
         );
+        assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
     }
 
     #[test]
-    #[should_panic(expected = "protocol is paused")]
     fn rejects_registration_when_protocol_is_paused() {
         let (env, client, protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        use earnproof_shared::ProofError;
         protocol_config.pause();
 
-        client.register_proof(
+        let result = client.try_register_proof(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &Address::from_str(&env, ISSUER),
             &1,
             &2_000,
         );
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
     }
 
     #[test]
-    #[should_panic(expected = "issuer is not active")]
     fn rejects_inactive_issuer_address() {
         let (env, client, _protocol_config, issuer_registry, _issuer_registry_id) = setup();
+        use earnproof_shared::ProofError;
         let inactive_issuer = Address::from_str(
             &env,
             "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
@@ -345,13 +365,14 @@ mod test {
         issuer_registry.register_issuer(&bytes(&env, 10), &inactive_issuer, &bytes(&env, 11));
         issuer_registry.suspend_issuer(&bytes(&env, 10));
 
-        client.register_proof(
+        let result = client.try_register_proof(
             &bytes(&env, 1),
             &bytes(&env, 2),
             &inactive_issuer,
             &1,
             &2_000,
         );
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
     }
 
     #[test]

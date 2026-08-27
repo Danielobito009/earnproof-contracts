@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EarnProof Contract Event Fixture",
+  "description": "Schema for versioned, network-agnostic contract event fixtures used by backend indexers.",
+  "type": "object",
+  "required": [
+    "event",
+    "contract",
+    "contract_version",
+    "schema_version",
+    "topics",
+    "payload",
+    "emitted_by"
+  ],
+  "properties": {
+    "event": {
+      "type": "string",
+      "description": "Unique event name matching the Soroban #[contractevent] struct identifier."
+    },
+    "contract": {
+      "type": "string",
+      "enum": ["protocol-config", "issuer-registry", "proof-registry"],
+      "description": "Contract crate name that emits this event."
+    },
+    "contract_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semver version of the contract crate at fixture generation time."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing fixture schema version. Increment on any structural change."
+    },
+    "topics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Indexed topic strings emitted in the Soroban event. First topic is the event discriminant."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Non-indexed payload fields. Each key maps to a field descriptor.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["type", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Soroban SDK type name (Address, Bool, U32, U64, BytesN<32>, etc.)."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable field description."
+          },
+          "example": {
+            "description": "Representative value for indexer integration testing."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "emitted_by": {
+      "type": "string",
+      "description": "Public contract function that emits this event."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable event description."
+    },
+    "compatibility": {
+      "type": "string",
+      "enum": ["stable", "additive", "breaking"],
+      "description": "Change classification for versioning: stable (unchanged), additive (new optional fields), breaking (removed/renamed fields)."
+    }
+  },
+  "additionalProperties": false
+}

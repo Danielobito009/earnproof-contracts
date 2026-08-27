@@ -671,6 +671,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "emergency-tests"
+version = "0.1.0"
+dependencies = [
+ "earnproof-shared",
+ "issuer-registry",
+ "proof-registry",
+ "protocol-config",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "enum-ordinalize"
 version = "4.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,6 +718,25 @@ name = "ethnum"
 version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
+
+[[package]]
+name = "event-fixtures"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "event-tests"
+version = "0.1.0"
+dependencies = [
+ "earnproof-shared",
+ "issuer-registry",
+ "proof-registry",
+ "protocol-config",
+ "soroban-sdk",
+]
 
 [[package]]
 name = "ff"
@@ -1232,6 +1262,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "resource-budget-tests"
+version = "0.1.0"
+dependencies = [
+ "earnproof-shared",
+ "issuer-registry",
+ "proof-registry",
+ "protocol-config",
+ "soroban-sdk",
 ]
 
 [[package]]
