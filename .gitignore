@@ -5,3 +5,4 @@ test_snapshots
 .DS_Store
 .sandbox-manifest.json
 scripts/local-sandbox/.sandbox-manifest.json
+scripts/smoke-proof-lifecycle-result.json
