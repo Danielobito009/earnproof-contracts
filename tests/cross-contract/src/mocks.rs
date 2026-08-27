@@ -240,7 +240,10 @@ impl RecordingConfig {
 
     /// Whether the write performed during boundary 1 is still there.
     pub fn was_touched(env: Env) -> bool {
-        env.storage().persistent().get(&MockKey::Touched).unwrap_or(false)
+        env.storage()
+            .persistent()
+            .get(&MockKey::Touched)
+            .unwrap_or(false)
     }
 }
 
@@ -256,7 +259,11 @@ pub struct SelfPausingConfig;
 #[contractimpl]
 impl SelfPausingConfig {
     pub fn is_paused(env: Env) -> bool {
-        let observed: bool = env.storage().instance().get(&MockKey::Paused).unwrap_or(false);
+        let observed: bool = env
+            .storage()
+            .instance()
+            .get(&MockKey::Paused)
+            .unwrap_or(false);
         env.storage().instance().set(&MockKey::Paused, &true);
         observed
     }
@@ -267,6 +274,9 @@ impl SelfPausingConfig {
 
     /// The flag as it stands now.
     pub fn pause_flag(env: Env) -> bool {
-        env.storage().instance().get(&MockKey::Paused).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&MockKey::Paused)
+            .unwrap_or(false)
     }
 }

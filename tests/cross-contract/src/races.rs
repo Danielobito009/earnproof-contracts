@@ -71,10 +71,9 @@ fn apply(deployment: &Deployment, update: Update) {
 fn permits_registration(update: Update) -> bool {
     match update {
         Update::Unpause | Update::ApproveSchema | Update::ReactivateIssuer => true,
-        Update::Pause
-        | Update::DeprecateSchema
-        | Update::SuspendIssuer
-        | Update::RevokeIssuer => false,
+        Update::Pause | Update::DeprecateSchema | Update::SuspendIssuer | Update::RevokeIssuer => {
+            false
+        }
     }
 }
 
@@ -197,7 +196,10 @@ fn a_dependency_change_during_the_invocation_cannot_undo_the_committed_write() {
     // And the next registration observes the new state, with no carry-over from
     // the value the previous invocation read.
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB5));
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
 }
 
 #[test]
@@ -217,7 +219,10 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB6));
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
     assert!(
         !racing.pause_flag(),
         "a dependency change made during a rejected registration survived it"

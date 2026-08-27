@@ -251,7 +251,10 @@ impl Deployment<'_> {
         let (proof, proof_ttl) = self.env.as_contract(&self.proofs.address, || {
             let persistent = self.env.storage().persistent();
             if persistent.has(&key) {
-                (persistent.get::<_, ProofRecord>(&key), Some(persistent.get_ttl(&key)))
+                (
+                    persistent.get::<_, ProofRecord>(&key),
+                    Some(persistent.get_ttl(&key)),
+                )
             } else {
                 (None, None)
             }

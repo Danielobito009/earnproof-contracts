@@ -42,9 +42,8 @@ fn the_reconstructed_proof_key_addresses_the_stored_record() {
     let proof_id = deployment.register(0x11);
 
     let key = proof_key(&deployment.env, &proof_id);
-    let stored: Option<ProofRecord> = deployment
-        .env
-        .as_contract(&deployment.proofs.address, || {
+    let stored: Option<ProofRecord> =
+        deployment.env.as_contract(&deployment.proofs.address, || {
             deployment.env.storage().persistent().get(&key)
         });
     let via_getter = deployment.proofs.get_proof(&proof_id);
@@ -121,7 +120,10 @@ fn root_authorization_alone_registers_against_dependencies_that_demand_none() {
     let rejection = register_with_root_auth_only(&deployment, &proof_id);
 
     assert_eq!(rejection, Rejection::Accepted);
-    assert_eq!(deployment.proofs.get_proof(&proof_id).proof_id_hash, proof_id);
+    assert_eq!(
+        deployment.proofs.get_proof(&proof_id).proof_id_hash,
+        proof_id
+    );
 }
 
 /// Attempts a registration carrying exactly one authorization entry: the
@@ -181,7 +183,10 @@ fn zero_schema_version_is_rejected_before_the_protocol_config_is_read() {
         deployment.expiry(),
     );
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
 }
 
 #[test]
@@ -310,7 +315,10 @@ fn a_paused_protocol_is_rejected_with_a_typed_error() {
     // observe today and what `contracts/proof-registry` asserts in its own
     // tests, so it is what this test pins. Re-mapping it would be a Semantic
     // change under `docs/compatibility.md` and belongs to a release.
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
 }
 
 #[test]
@@ -335,7 +343,10 @@ fn an_inactive_issuer_is_rejected_with_a_typed_error() {
 
     // As with the pause, the inactive issuer is reported as code 304 rather
     // than `IssuerError::IssuerInactive` (code 205).
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
 }
 
 #[test]
@@ -377,7 +388,10 @@ fn a_dependency_write_is_rolled_back_when_the_registration_fails() {
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0x71));
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
     assert!(
         !recorder.was_touched(),
         "a dependency's own write survived a rejected registration; \
@@ -444,7 +458,10 @@ fn a_failed_registration_does_not_extend_the_schema_version_ttl() {
     // attempt; the guard above is what gives that comparison teeth.
     let rejection = deployment.assert_rejected_and_atomic(&proof_id);
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::InvalidSchemaVersion));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::InvalidSchemaVersion)
+    );
 }
 
 #[test]
