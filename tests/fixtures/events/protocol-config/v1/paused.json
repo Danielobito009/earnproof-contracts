@@ -1,0 +1,17 @@
+{
+  "event": "Paused",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["Paused"],
+  "payload": {
+    "paused": {
+      "type": "Bool",
+      "description": "Always true when this event is emitted.",
+      "example": true
+    }
+  },
+  "emitted_by": "pause",
+  "description": "Emitted when the protocol is paused, blocking sensitive operations.",
+  "compatibility": "stable"
+}

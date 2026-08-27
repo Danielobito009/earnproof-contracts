@@ -1,0 +1,17 @@
+{
+  "event": "Unpaused",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["Unpaused"],
+  "payload": {
+    "paused": {
+      "type": "Bool",
+      "description": "Always false when this event is emitted.",
+      "example": false
+    }
+  },
+  "emitted_by": "unpause",
+  "description": "Emitted when the protocol is unpaused, re-enabling sensitive operations.",
+  "compatibility": "stable"
+}

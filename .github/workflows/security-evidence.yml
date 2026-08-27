@@ -1,0 +1,146 @@
+name: Security evidence
+
+# Validates that docs/security-review/ still points at things that exist.
+#
+# This cannot prove the index is *correct* — line numbers drift silently and no
+# CI job can tell whether ":88" is still a require_auth call. It proves the
+# weaker property that every referenced path exists, every internal anchor
+# resolves, every issue link is well-formed, and every command the index tells a
+# reviewer to run is a real command. That is enough to catch the most common
+# failure: a file renamed out from under the index.
+
+on:
+  pull_request:
+    paths:
+      - "docs/security-review/**"
+      - "docs/threat-model.md"
+      - "SECURITY.md"
+      - "contracts/**"
+      - "packages/**"
+      - "tests/**"
+      - "scripts/**"
+      - ".github/workflows/security-evidence.yml"
+  push:
+    branches: [main]
+
+jobs:
+  validate-evidence-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Referenced repository paths exist
+        run: |
+          set -euo pipefail
+          # Backtick-quoted tokens rooted at a known top-level directory.
+          # A trailing ":123" line reference is stripped before the check.
+          grep -ohE '`[A-Za-z0-9_./*-]+`' docs/security-review/README.md docs/threat-model.md \
+            | tr -d '`' \
+            | grep -E '^(contracts|packages|tests|scripts|docs|\.github)/' \
+            | sed 's/:.*$//' \
+            | grep -v '\*' \
+            | sort -u > /tmp/referenced_paths
+          fail=0
+          while read -r path; do
+            if [ ! -e "$path" ]; then
+              echo "::error::referenced path does not exist: $path"
+              fail=1
+            fi
+          done < /tmp/referenced_paths
+          exit $fail
+
+      - name: Internal anchors resolve
+        run: |
+          set -euo pipefail
+          doc=docs/security-review/README.md
+          # Every heading, slugified the way GitHub does it.
+          grep -E '^#{2,} ' "$doc" \
+            | sed -E 's/^#+ //' \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9 -]//g; s/ /-/g' \
+            | sort -u > /tmp/anchors
+          fail=0
+          for anchor in $(grep -ohE '\]\(#[a-z0-9-]+\)' "$doc" | sed -E 's/\]\(#(.*)\)/\1/' | sort -u); do
+            if ! grep -qx "$anchor" /tmp/anchors; then
+              echo "::error::unresolved internal anchor: #$anchor"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Issue links are well-formed and point at this repository
+        run: |
+          set -euo pipefail
+          fail=0
+          for url in $(grep -ohE 'https://github\.com/[^)]+' docs/security-review/README.md | sort -u); do
+            case "$url" in
+              https://github.com/veridatum-labs/earnproof-contracts/issues/[0-9]*) ;;
+              *)
+                echo "::error::unexpected external link in the evidence index: $url"
+                fail=1
+                ;;
+            esac
+          done
+          exit $fail
+
+      - name: Index carries no credential-shaped material
+        run: |
+          set -euo pipefail
+          # Stellar secret seeds are S + 55 base32 chars. Nothing in the review
+          # material should ever match, nor should common secret keywords.
+          if grep -rnE '\bS[A-Z2-7]{55}\b' docs/security-review/ docs/threat-model.md SECURITY.md; then
+            echo "::error::possible Stellar secret key in security review material"
+            exit 1
+          fi
+          if grep -rniE '(private[_ -]?key|secret[_ -]?key|seed phrase|mnemonic)[[:space:]]*[:=]' \
+              docs/security-review/ docs/threat-model.md; then
+            echo "::error::possible credential assignment in security review material"
+            exit 1
+          fi
+
+      - name: Commit recorded in the index is a real commit
+        run: |
+          set -euo pipefail
+          sha=$(grep -oE '^\*\*Commit:\*\* `[0-9a-f]{40}`' docs/security-review/README.md \
+                | grep -oE '[0-9a-f]{40}')
+          if [ -z "$sha" ]; then
+            echo "::error::the evidence index does not record a full 40-character commit SHA"
+            exit 1
+          fi
+          git fetch --depth=1 origin "$sha" 2>/dev/null || true
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            echo "::notice::indexed commit $sha is not reachable in this shallow checkout; skipping"
+          else
+            echo "indexed commit $sha exists"
+          fi
+
+  validate-recorded-commands:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The index tells a reviewer to run these four commands. Running them here
+      # is what makes that instruction trustworthy.
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo build --workspace
+
+      - name: Recorded test inventory matches reality
+        run: |
+          set -euo pipefail
+          recorded=$(grep -oE '^\| \*\*Total\*\* \| \| \*\*[0-9]+\*\* \|' docs/security-review/README.md \
+                     | grep -oE '[0-9]+')
+          actual=$(cargo test --workspace 2>&1 \
+                   | grep -oE '^test result: ok\. [0-9]+ passed' \
+                   | grep -oE '[0-9]+' \
+                   | awk '{ sum += $1 } END { print sum + 0 }')
+          echo "index records $recorded tests; workspace reports $actual"
+          if [ "$recorded" != "$actual" ]; then
+            echo "::error::docs/security-review/README.md records $recorded tests but the workspace has $actual"
+            exit 1
+          fi

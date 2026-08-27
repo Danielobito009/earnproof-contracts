@@ -3,7 +3,12 @@ members = [
   "contracts/protocol-config",
   "contracts/issuer-registry",
   "contracts/proof-registry",
-  "packages/shared"
+  "packages/shared",
+  "tests/event-fixtures",
+  "tests/events",
+  "tests/emergency",
+  "tests/budgets",
+  "tests/cross-contract"
 ]
 resolver = "2"
 
