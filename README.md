@@ -85,6 +85,58 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets
 ```
 
+## Executable Documentation Examples
+
+This repository includes comprehensive, runnable documentation examples that demonstrate how to invoke each contract method. All examples use synthetic identifiers and run in a local Soroban sandbox environment.
+
+### Running Documentation Examples
+
+To run all documentation examples:
+
+```bash
+cargo test --doc --workspace
+```
+
+To run examples for a specific contract:
+
+```bash
+cargo test --doc protocol_config
+cargo test --doc issuer_registry
+cargo test --doc proof_registry
+cargo test --doc integration
+```
+
+### Documentation Example Coverage
+
+Examples are organized by contract and demonstrate:
+
+- **Protocol Config** — Initialization, schema approval/deprecation, pause operations, admin changes
+- **Issuer Registry** — Issuer registration, lifecycle transitions (suspend/reactivate/revoke), metadata updates, address rotation
+- **Proof Registry** — Proof registration, issuer-initiated and admin revocation, validity checks
+- **Integration** — End-to-end workflows and cross-contract validation (paused protocol blocks registration, suspended issuers block registration, unapproved schemas block registration)
+
+### Key Patterns in Examples
+
+**Hashing Requirements:**
+All public identifiers must be hashed before passing to contracts:
+- `proof_id_hash = sha256(proof_id)`
+- `issuer_id_hash = sha256(issuer_id)`
+- `commitment_hash = sha256(canonical_credential_payload)`
+- `metadata_hash = sha256(canonical_public_issuer_metadata)`
+
+In examples, we use synthetic `BytesN<32>` values to represent hashes.
+
+**Authorization Patterns:**
+- Protocol-Config writes require admin authorization
+- Issuer-Registry writes require admin authorization
+- Proof-Registry writes require issuer authorization (revoke_proof) or admin authorization (admin_revoke_proof)
+
+**Lifecycle Patterns:**
+- Issuer: register (Active) → suspend (Suspended) → reactivate (Active) → revoke (Revoked, terminal)
+- Proof: register (Active) → revoke (Revoked, terminal); expiration is implicit
+
+See [tests/doc-examples/mod.rs](tests/doc-examples/mod.rs) for complete documentation and usage patterns.
+
 ## Current Validation Status
 
 The repository now pins a stable Rust toolchain in `rust-toolchain.toml` and CI runs formatting, clippy, tests, and build.

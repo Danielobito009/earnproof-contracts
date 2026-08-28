@@ -2,6 +2,8 @@
 
 This document lists the contract calls the EarnProof API should use when writing proof commitments, reading issuer status, and validating public proof state.
 
+**See Also:** [Executable Examples](./executable-examples.md) for runnable demonstrations of all contract invocation patterns.
+
 ## Protocol Config
 
 Contract responsibility:

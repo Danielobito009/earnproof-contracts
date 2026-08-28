@@ -2,6 +2,8 @@
 
 This document is the authoritative reference for every on-chain storage key used by the EarnProof Soroban contracts. It is intended for auditors, indexer authors, and backend maintainers.
 
+**See Also:** [Executable Examples](./executable-examples.md) for runnable demonstrations of storage model behavior and contract invocation patterns.
+
 Covered contracts:
 
 - [`protocol-config`](../contracts/protocol-config/src/lib.rs)
