@@ -1,6 +1,6 @@
 #![no_std]
 
-use earnproof_shared::{ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{ProofRecord, ProofStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, MAX_PROOF_ID_HASH_BYTES, MAX_COMMITMENT_HASH_BYTES};
 use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contractclient(name = "ProtocolConfigContractClient")]
@@ -17,6 +17,14 @@ pub trait IssuerRegistryInterface {
 #[contract]
 pub struct ProofRegistryContract;
 
+/// Error type for proof registry contract.
+#[derive(Debug)]
+#[contracttype]
+pub enum ContractError {
+    /// Returned when an input parameter exceeds its documented maximum size.
+    InputTooLarge = 1000,
+}
+
 #[contracttype]
 enum DataKey {
     Admin,
@@ -27,6 +35,31 @@ enum DataKey {
 
 #[contractimpl]
 impl ProofRegistryContract {
+    /// Initializes the proof registry contract.
+    ///
+    /// # Authorization
+    /// Requires signature from `admin`.
+    ///
+    /// # Input Limits
+    /// - `admin`: fixed-size Stellar address (no validation needed)
+    /// - `issuer_registry`: fixed-size contract address (no validation needed)
+    /// - `protocol_config`: fixed-size contract address (no validation needed)
+    ///
+    /// # Validation
+    /// - Checks that contract is not already initialized
+    /// - Verifies authorization from admin address
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Admin` → admin address (instance)
+    /// - `DataKey::IssuerRegistry` → issuer_registry address (instance)
+    /// - `DataKey::ProtocolConfig` → protocol_config address (instance)
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before any storage write. On error,
+    /// no partial state is committed.
+    ///
+    /// # Panics
+    /// - If contract is already initialized
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -48,6 +81,51 @@ impl ProofRegistryContract {
         Self::extend_instance_ttl(env);
     }
 
+    /// Registers a new proof in the registry.
+    ///
+    /// # Authorization
+    /// Requires signature from `issuer_address`.
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    /// - `commitment_hash`: maximum `MAX_COMMITMENT_HASH_BYTES` (32) bytes (fixed-size)
+    /// - `issuer_address`: fixed-size Stellar address (no validation needed)
+    /// - `schema_version`: u32 (fixed-size, validated for approval)
+    /// - `expires_at`: u64 (fixed-size, validated for future timestamp)
+    ///
+    /// # Validation
+    /// - Input size validation (proof_id_hash and commitment_hash)
+    /// - Schema version must be approved by protocol config
+    /// - Schema version must be >= 1
+    /// - Issuer address must be active in issuer registry
+    /// - Protocol must not be paused
+    /// - Expiration timestamp must be in the future
+    /// - Proof ID must not already be registered (no duplicates)
+    /// - Verifies authorization from issuer_address
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Proof(proof_id_hash)` → ProofRecord (persistent)
+    ///
+    /// # Cross-Contract Calls
+    /// - Calls `protocol_config.is_paused()`
+    /// - Calls `protocol_config.is_schema_version_approved(schema_version)`
+    /// - Calls `issuer_registry.is_active_address(issuer_address)`
+    ///
+    /// # Failure Atomicity
+    /// Over-limit inputs are rejected before any storage write.
+    /// All validation (including cross-contract calls) occurs before storage.
+    /// If any validation fails, no partial state is committed.
+    ///
+    /// # Errors
+    /// - `ContractError::InputTooLarge` if any hash exceeds its limit
+    ///
+    /// # Panics
+    /// - If schema_version < MIN_SCHEMA_VERSION
+    /// - If schema_version is not approved
+    /// - If issuer_address is not active
+    /// - If protocol is paused
+    /// - If expires_at is not in the future
+    /// - If proof_id_hash is already registered
     pub fn register_proof(
         env: Env,
         proof_id_hash: BytesN<32>,
@@ -103,14 +181,79 @@ impl ProofRegistryContract {
         Self::extend_proof_key_ttl(env, &key);
     }
 
+    /// Revokes a proof, marking it as no longer valid.
+    ///
+    /// # Authorization
+    /// Requires signature from the issuer who registered the proof.
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    ///
+    /// # Validation
+    /// - Input size validation (proof_id_hash)
+    /// - Proof must exist
+    /// - Proof must not already be revoked
+    /// - Verifies authorization from the issuer stored in the proof
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Proof(proof_id_hash)` → updated ProofRecord with status=Revoked (persistent)
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before storage. No partial state is committed on error.
+    ///
+    /// # Errors
+    /// - `ContractError::InputTooLarge` if proof_id_hash exceeds its limit
+    ///
+    /// # Panics
+    /// - If proof is not found
+    /// - If proof is already revoked
     pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) {
         Self::set_revoked(env, proof_id_hash, false);
     }
 
+    /// Revokes a proof as an admin, marking it as no longer valid.
+    ///
+    /// # Authorization
+    /// Requires signature from the admin.
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    ///
+    /// # Validation
+    /// - Input size validation (proof_id_hash)
+    /// - Proof must exist
+    /// - Proof must not already be revoked
+    /// - Verifies authorization from admin
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Proof(proof_id_hash)` → updated ProofRecord with status=Revoked (persistent)
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before storage. No partial state is committed on error.
+    ///
+    /// # Errors
+    /// - `ContractError::InputTooLarge` if proof_id_hash exceeds its limit
+    ///
+    /// # Panics
+    /// - If proof is not found
+    /// - If proof is already revoked
     pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) {
         Self::set_revoked(env, proof_id_hash, true);
     }
 
+    /// Retrieves the full record for a proof by its ID hash.
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Proof(proof_id_hash)` (persistent, with TTL extension)
+    ///
+    /// # Returns
+    /// - `ProofRecord` containing all proof information
+    ///
+    /// # Panics
+    /// - If proof is not found
     pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> ProofRecord {
         let key = DataKey::Proof(proof_id_hash);
         let record = env
@@ -122,16 +265,51 @@ impl ProofRegistryContract {
         record
     }
 
+    /// Checks if a proof is currently valid (active and not expired).
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Proof(proof_id_hash)` (persistent, with TTL extension)
+    ///
+    /// # Returns
+    /// - `true` if proof is active and not yet expired
+    /// - `false` if proof is revoked or expired
+    ///
+    /// # Panics
+    /// - If proof is not found
     pub fn is_valid_proof(env: Env, proof_id_hash: BytesN<32>) -> bool {
         let record = Self::get_proof(env.clone(), proof_id_hash);
         record.status == ProofStatus::Active && env.ledger().timestamp() <= record.expires_at
     }
 
+    /// Checks if a proof is revoked.
+    ///
+    /// # Input Limits
+    /// - `proof_id_hash`: maximum `MAX_PROOF_ID_HASH_BYTES` (32) bytes (fixed-size)
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Proof(proof_id_hash)` (persistent, with TTL extension)
+    ///
+    /// # Returns
+    /// - `true` if proof status is Revoked
+    /// - `false` otherwise
+    ///
+    /// # Panics
+    /// - If proof is not found
     pub fn is_revoked(env: Env, proof_id_hash: BytesN<32>) -> bool {
         let record = Self::get_proof(env, proof_id_hash);
         record.status == ProofStatus::Revoked
     }
 
+    /// Retrieves the current proof registry administrator address.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Admin` (instance, no TTL extension)
+    ///
+    /// # Panics
+    /// - If contract is not initialized
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -139,6 +317,13 @@ impl ProofRegistryContract {
             .expect("not initialized")
     }
 
+    /// Retrieves the address of the associated issuer registry contract.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::IssuerRegistry` (instance, no TTL extension)
+    ///
+    /// # Panics
+    /// - If issuer registry not configured
     pub fn get_issuer_registry(env: Env) -> Address {
         env.storage()
             .instance()
@@ -146,6 +331,13 @@ impl ProofRegistryContract {
             .expect("issuer registry not configured")
     }
 
+    /// Retrieves the address of the associated protocol config contract.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::ProtocolConfig` (instance, no TTL extension)
+    ///
+    /// # Panics
+    /// - If protocol config not configured
     pub fn get_protocol_config(env: Env) -> Address {
         env.storage()
             .instance()

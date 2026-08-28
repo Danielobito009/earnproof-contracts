@@ -1,10 +1,18 @@
 #![no_std]
 
-use earnproof_shared::{TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, MAX_SCHEMA_VERSION, MIN_SCHEMA_VERSION};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env};
 
 #[contract]
 pub struct ProtocolConfigContract;
+
+/// Error type for protocol configuration contract.
+#[derive(Debug)]
+#[contracttype]
+pub enum ContractError {
+    /// Returned when an input parameter exceeds its documented maximum size.
+    InputTooLarge = 1000,
+}
 
 #[contracttype]
 enum DataKey {
@@ -44,8 +52,49 @@ pub struct SchemaDeprecated {
     pub version: u32,
 }
 
+/// Validates that a version number is within acceptable range.
+/// Called BEFORE any storage write to ensure atomicity.
+///
+/// # Arguments
+/// * `version` - The schema version to validate
+///
+/// # Errors
+/// Returns error if version is outside the valid range.
+fn validate_schema_version(version: u32) -> Result<(), ContractError> {
+    if version < MIN_SCHEMA_VERSION || version > MAX_SCHEMA_VERSION {
+        return Err(ContractError::InputTooLarge);
+    }
+    Ok(())
+}
+
 #[contractimpl]
 impl ProtocolConfigContract {
+    /// Initializes the protocol configuration contract.
+    ///
+    /// # Authorization
+    /// Requires signature from `admin`.
+    ///
+    /// # Input Limits
+    /// - `admin`: fixed-size Stellar address (no validation needed)
+    ///
+    /// # Validation
+    /// - Checks that contract is not already initialized
+    /// - Verifies authorization from admin address
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Admin` → admin address (instance)
+    /// - `DataKey::Paused` → false (instance)
+    /// - `DataKey::ConfigVersion` → 1 (instance)
+    ///
+    /// # Events Emitted
+    /// - `Initialized { admin }`
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before any storage write. On error,
+    /// no partial state is committed.
+    ///
+    /// # Panics
+    /// - If contract is already initialized
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
@@ -61,6 +110,13 @@ impl ProtocolConfigContract {
         Initialized { admin }.publish(&env);
     }
 
+    /// Retrieves the current protocol administrator address.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Admin` (instance, no TTL extension)
+    ///
+    /// # Panics
+    /// - If contract is not initialized
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -68,6 +124,27 @@ impl ProtocolConfigContract {
             .expect("not initialized")
     }
 
+    /// Updates the protocol administrator to a new address.
+    ///
+    /// # Authorization
+    /// Requires signature from the current admin.
+    ///
+    /// # Input Limits
+    /// - `new_admin`: fixed-size Stellar address (no validation needed)
+    ///
+    /// # Validation
+    /// - Verifies authorization from current admin
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Admin` → new_admin (instance, overwrite)
+    /// - `DataKey::ConfigVersion` → incremented (instance)
+    ///
+    /// # Events Emitted
+    /// - `AdminChanged { new_admin }`
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before storage writes. On error,
+    /// no partial state is committed.
     pub fn set_admin(env: Env, new_admin: Address) {
         let admin = Self::get_admin(env.clone());
         Self::require_auth(&admin);
@@ -76,6 +153,14 @@ impl ProtocolConfigContract {
         AdminChanged { new_admin }.publish(&env);
     }
 
+    /// Checks if the protocol is currently paused.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::Paused` (instance, no TTL extension)
+    ///
+    /// # Returns
+    /// - `true` if protocol is paused
+    /// - `false` if protocol is active (default)
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -83,6 +168,24 @@ impl ProtocolConfigContract {
             .unwrap_or(false)
     }
 
+    /// Pauses the protocol, preventing new proofs from being registered.
+    ///
+    /// # Authorization
+    /// Requires signature from the admin.
+    ///
+    /// # Validation
+    /// - Verifies authorization from admin
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Paused` → true (instance)
+    /// - `DataKey::ConfigVersion` → incremented (instance)
+    ///
+    /// # Events Emitted
+    /// - `Paused { paused: true }`
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before storage writes. On error,
+    /// no partial state is committed.
     pub fn pause(env: Env) {
         let admin = Self::get_admin(env.clone());
         Self::require_auth(&admin);
@@ -91,6 +194,24 @@ impl ProtocolConfigContract {
         Paused { paused: true }.publish(&env);
     }
 
+    /// Resumes the protocol, allowing new proofs to be registered.
+    ///
+    /// # Authorization
+    /// Requires signature from the admin.
+    ///
+    /// # Validation
+    /// - Verifies authorization from admin
+    ///
+    /// # Storage Writes
+    /// - `DataKey::Paused` → false (instance)
+    /// - `DataKey::ConfigVersion` → incremented (instance)
+    ///
+    /// # Events Emitted
+    /// - `Unpaused { paused: false }`
+    ///
+    /// # Failure Atomicity
+    /// All validation occurs before storage writes. On error,
+    /// no partial state is committed.
     pub fn unpause(env: Env) {
         let admin = Self::get_admin(env.clone());
         Self::require_auth(&admin);
@@ -99,9 +220,38 @@ impl ProtocolConfigContract {
         Unpaused { paused: false }.publish(&env);
     }
 
+    /// Approves a credential schema version for use in proof registration.
+    ///
+    /// # Authorization
+    /// Requires signature from the admin.
+    ///
+    /// # Input Limits
+    /// - `version`: maximum `MAX_SCHEMA_VERSION` (u32::MAX)
+    ///
+    /// # Validation
+    /// - Input size validation (version in valid range)
+    /// - Version must be >= MIN_SCHEMA_VERSION (1)
+    ///
+    /// # Storage Writes
+    /// - `DataKey::SchemaVersion(version)` → true (persistent)
+    /// - `DataKey::ConfigVersion` → incremented (instance)
+    ///
+    /// # Events Emitted
+    /// - `SchemaApproved { version }`
+    ///
+    /// # Failure Atomicity
+    /// Over-limit inputs are rejected before any storage write.
+    /// No partial state is committed on error.
+    ///
+    /// # Errors
+    /// - `ContractError::InputTooLarge` if version is out of range
+    ///
+    /// # Panics
+    /// - If version < MIN_SCHEMA_VERSION (checked by ensure_nonzero_version)
     pub fn approve_schema_version(env: Env, version: u32) {
         let admin = Self::get_admin(env.clone());
         Self::require_auth(&admin);
+        validate_schema_version(version).expect("invalid version");
         Self::ensure_nonzero_version(version);
         env.storage()
             .persistent()
@@ -111,9 +261,38 @@ impl ProtocolConfigContract {
         SchemaApproved { version }.publish(&env);
     }
 
+    /// Deprecates a credential schema version, preventing it from being used in new proofs.
+    ///
+    /// # Authorization
+    /// Requires signature from the admin.
+    ///
+    /// # Input Limits
+    /// - `version`: maximum `MAX_SCHEMA_VERSION` (u32::MAX)
+    ///
+    /// # Validation
+    /// - Input size validation (version in valid range)
+    /// - Version must be >= MIN_SCHEMA_VERSION (1)
+    ///
+    /// # Storage Writes
+    /// - `DataKey::SchemaVersion(version)` → false (persistent, overwrite)
+    /// - `DataKey::ConfigVersion` → incremented (instance)
+    ///
+    /// # Events Emitted
+    /// - `SchemaDeprecated { version }`
+    ///
+    /// # Failure Atomicity
+    /// Over-limit inputs are rejected before any storage write.
+    /// No partial state is committed on error.
+    ///
+    /// # Errors
+    /// - `ContractError::InputTooLarge` if version is out of range
+    ///
+    /// # Panics
+    /// - If version < MIN_SCHEMA_VERSION (checked by ensure_nonzero_version)
     pub fn deprecate_schema_version(env: Env, version: u32) {
         let admin = Self::get_admin(env.clone());
         Self::require_auth(&admin);
+        validate_schema_version(version).expect("invalid version");
         Self::ensure_nonzero_version(version);
         env.storage()
             .persistent()
@@ -123,6 +302,17 @@ impl ProtocolConfigContract {
         SchemaDeprecated { version }.publish(&env);
     }
 
+    /// Checks if a credential schema version is currently approved.
+    ///
+    /// # Input Limits
+    /// - `version`: maximum `MAX_SCHEMA_VERSION` (u32::MAX)
+    ///
+    /// # Storage Reads
+    /// - `DataKey::SchemaVersion(version)` (persistent, with TTL extension if key exists)
+    ///
+    /// # Returns
+    /// - `true` if version is approved
+    /// - `false` if version is deprecated or never seen
     pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
         if version == 0 {
             return false;
@@ -140,6 +330,13 @@ impl ProtocolConfigContract {
         approved
     }
 
+    /// Retrieves the current protocol configuration version counter.
+    ///
+    /// # Storage Reads
+    /// - `DataKey::ConfigVersion` (instance, no TTL extension)
+    ///
+    /// # Returns
+    /// - Version counter (incremented on each state mutation)
     pub fn get_config_version(env: Env) -> u32 {
         env.storage()
             .instance()
