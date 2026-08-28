@@ -1,4 +1,4 @@
-# id\tkind\tsource\thex
-empty-source\tsha256\t\t0000000000000000000000000000000000000000000000000000000000000000
-malformed-hex\tsha256\tproof\tzz
-wrong-length\tsha256\tproof\t00
+# id	kind	source	hex
+empty-source	sha256		0000000000000000000000000000000000000000000000000000000000000000
+malformed-hex	sha256	proof	zz
+wrong-length	sha256	proof	00
