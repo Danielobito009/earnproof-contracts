@@ -1,0 +1,7 @@
+# id\tkind\tsource\thex\tBytesN<32> or encoded bytes\tnotes
+proof-1\tsha256\tproof:example:1\tc5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19\tc5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19\tUTF-8, case-sensitive
+commitment-1\tsha256\tcommitment:example:1\t7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35\t7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35\tUTF-8, case-sensitive
+issuer-1\tsha256\tissuer:example:1\t053b8e36043a20ef299e4f154b78a44f7d2583556f39a6722d2adcbd56f5aaab\t053b8e36043a20ef299e4f154b78a44f7d2583556f39a6722d2adcbd56f5aaab\tUTF-8, case-sensitive
+metadata-1\tsha256\tmetadata:example:1\te92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558\te92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558\tUTF-8, case-sensitive
+schema-7\tu32-be\t7\t00000007\t00000007\tunsigned big-endian
+expiration-1700000000\tu64-be\t1700000000\t000000006553f100\t000000006553f100\tunsigned big-endian

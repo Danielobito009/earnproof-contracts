@@ -6,6 +6,15 @@ on:
     branches: [main]
 
 jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check documentation links and code references
+        run: python3 scripts/check-doc-links.py
+      - name: Check generated API reference
+        run: python3 scripts/generate-reference.py --check
+
   contracts:
     runs-on: ubuntu-latest
     steps:
