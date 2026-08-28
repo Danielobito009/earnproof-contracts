@@ -176,13 +176,14 @@ describe('Contract Bindings', () => {
   describe('type shapes and compile-time safety', () => {
     it('EarnProofClientConfig accepts required fields', () => {
       // This documents the compile-time requirement for EarnProofClientConfig
+      // Test configuration — example keys for testing only
       const config: EarnProofClientConfig = {
-        protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A',
-        issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F',
-        proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK',
+        protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A', // Example test address
+        issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F', // Example test address
+        proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK', // Example test address
         networkPassphrase: 'Test SDF Network ; September 2015',
         rpcUrl: 'https://soroban-testnet.stellar.org:443',
-        secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ',
+        secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ', // Example test key — DO NOT USE IN PRODUCTION
       };
 
       expect(config).toBeDefined();
@@ -195,13 +196,14 @@ describe('Contract Bindings', () => {
     });
 
     it('EarnProofClientConfig supports optional timeoutMs', () => {
+      // Test configuration — example keys for testing only
       const config: EarnProofClientConfig = {
-        protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A',
-        issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F',
-        proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK',
+        protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A', // Example test address
+        issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F', // Example test address
+        proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK', // Example test address
         networkPassphrase: 'Test SDF Network ; September 2015',
         rpcUrl: 'https://soroban-testnet.stellar.org:443',
-        secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ',
+        secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ', // Example test key — DO NOT USE IN PRODUCTION
         timeoutMs: 60000,
       };
 
@@ -799,7 +801,7 @@ describe('Contract Bindings', () => {
 
       const mockError: ErrorInterface = {
         method: 'registerProof',
-        contractId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK',
+        contractId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK', // Example test address
         message: 'Proof already registered',
       };
 

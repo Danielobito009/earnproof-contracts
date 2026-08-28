@@ -139,8 +139,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   throw "Rust toolchain not found. Install from https://rustup.rs/"
 }
 
-# Check wasm32 target
-$targets = cargo metadata --format-version 1 2>$null | ConvertFrom-Json
+# Check Cargo is available
 Write-Host "Cargo available" -ForegroundColor Green
 
 # Create artifacts directory

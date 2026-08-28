@@ -12,14 +12,15 @@ import { EarnProofClient, ContractInvocationError } from '../client';
 import type { EarnProofClientConfig } from '../client';
 
 describe('EarnProofClient integration', () => {
-  // Valid test configuration
+  // Test configuration — NEVER use these test keys in production
+  // These are example contract addresses and test keys for unit testing only
   const validConfig: EarnProofClientConfig = {
-    protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A',
-    issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F',
-    proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK',
+    protocolConfigId: 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A', // Example contract address
+    issuerRegistryId: 'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F', // Example contract address
+    proofRegistryId: 'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK', // Example contract address
     networkPassphrase: 'Test SDF Network ; September 2015',
     rpcUrl: 'https://soroban-testnet.stellar.org:443',
-    secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ',
+    secretKey: 'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ', // Example test key — DO NOT USE IN PRODUCTION
   };
 
   // ────────────────────────────────────────────────────────────
@@ -114,10 +115,11 @@ describe('EarnProofClient integration', () => {
     });
 
     it('accepts valid Stellar contract addresses', () => {
+      // Test contract addresses — example addresses for testing only
       const validAddresses = [
-        'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A',
-        'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F',
-        'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK',
+        'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A', // Example test address
+        'CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F', // Example test address
+        'CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK', // Example test address
       ];
 
       validAddresses.forEach((addr) => {
@@ -132,10 +134,10 @@ describe('EarnProofClient integration', () => {
     });
 
     it('accepts valid Stellar secret keys', () => {
-      // These are test keys; never use in production
+      // Test secret keys — example keys for testing only, DO NOT USE IN PRODUCTION
       const validSecretKeys = [
-        'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ',
-        'SBXVMVENPBNRUR23XNKSQMTCTW4V6OVXNFG4KJWFSBX7ZZLYGBYHK4Q3',
+        'SBHMPXKAFNHZPQIKOOYF7LDJ4PLRJMZMNMVHUFAQRJVGHTF2EYSHHIDZ', // Example test key
+        'SBXVMVENPBNRUR23XNKSQMTCTW4V6OVXNFG4KJWFSBX7ZZLYGBYHK4Q3', // Example test key
       ];
 
       validSecretKeys.forEach((key) => {
@@ -335,7 +337,7 @@ describe('EarnProofClient integration', () => {
     });
 
     it('ContractInvocationError includes contract ID', () => {
-      const contractId = 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A';
+      const contractId = 'CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A'; // Example test address
       const error = new ContractInvocationError('method', contractId, 'Test error');
 
       expect(error.contractId).toBe(contractId);
