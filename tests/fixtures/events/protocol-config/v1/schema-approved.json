@@ -1,0 +1,17 @@
+{
+  "event": "SchemaApproved",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SchemaApproved"],
+  "payload": {
+    "version": {
+      "type": "U32",
+      "description": "Schema version number that has been approved for use in proof registration.",
+      "example": 1
+    }
+  },
+  "emitted_by": "approve_schema_version",
+  "description": "Emitted when a schema version is approved for proof registration.",
+  "compatibility": "stable"
+}

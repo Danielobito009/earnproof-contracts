@@ -1,53 +1,73 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, BytesN};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN};
 
 pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
 
-// ── Input Size Limits ─────────────────────────────────────────
-// These constants document the maximum sizes for contract inputs.
-// All current inputs are fixed-size (BytesN<32>, Address, u32, u64).
-// These limits are provided for defensive programming and future
-// extensibility when variable-size inputs may be added.
+// ---------------------------------------------------------------------------
+// Error Codes
 //
-// Verified by resource-boundary tests: bulk operations with these
-// limits remain within per-transaction Soroban budgets.
+// Error ranges are allocated to prevent collisions:
+// - Common errors:       1-99
+// - Protocol Config:     100-199
+// - Issuer Registry:     200-299
+// - Proof Registry:      300-399
+//
+// Each error code is stable and machine-readable. Backend integrations
+// should map these codes to appropriate HTTP status codes and user messages.
+// ---------------------------------------------------------------------------
 
-/// Maximum size of issuer_id_hash input (BytesN<32>).
-/// Currently fixed at 32 bytes; documented for consistency.
-pub const MAX_ISSUER_ID_HASH_BYTES: u32 = 32;
+/// Common errors shared across all contracts.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    // Initialization errors (1-19)
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
 
-/// Maximum size of metadata_hash input (BytesN<32>).
-/// Currently fixed at 32 bytes; documented for consistency.
-pub const MAX_METADATA_HASH_BYTES: u32 = 32;
+    // Authorization errors (20-39)
+    Unauthorized = 20,
 
-/// Maximum size of proof_id_hash input (BytesN<32>).
-/// Currently fixed at 32 bytes; documented for consistency.
-pub const MAX_PROOF_ID_HASH_BYTES: u32 = 32;
+    // State errors (40-59)
+    AlreadyExists = 40,
+    NotFound = 41,
+    InvalidState = 42,
 
-/// Maximum size of commitment_hash input (BytesN<32>).
-/// Currently fixed at 32 bytes; documented for consistency.
-pub const MAX_COMMITMENT_HASH_BYTES: u32 = 32;
+    // Input validation errors (60-79)
+    InvalidInput = 60,
 
-/// Maximum number of issuers that can be registered in a single call.
-/// Current implementation registers one issuer per call; this constant
-/// documents the limit for defensive programming.
-pub const MAX_ISSUERS_PER_CALL: u32 = 1;
+    // Protocol state errors (80-99)
+    ProtocolPaused = 80,
+}
 
-/// Maximum number of proofs that can be registered in a single call.
-/// Current implementation registers one proof per call; this constant
-/// documents the limit for defensive programming.
-pub const MAX_PROOFS_PER_CALL: u32 = 1;
+/// Issuer-specific errors (200-299).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum IssuerError {
+    IssuerAlreadyRegistered = 200,
+    IssuerNotFound = 201,
+    IssuerAddressAlreadyRegistered = 202,
+    IssuerAddressNotFound = 203,
+    IssuerRevoked = 204,
+    IssuerInactive = 205,
+    InvalidTransition = 206,
+}
 
-/// Maximum schema version number.
-/// Version numbers are u32; this allows all valid versions.
-/// Version 0 is explicitly rejected by validate_version().
-pub const MAX_SCHEMA_VERSION: u32 = u32::MAX;
-
-/// Minimum schema version number (exclusive).
-/// Schema version 0 is not allowed (checked explicitly).
-pub const MIN_SCHEMA_VERSION: u32 = 1;
+/// Proof-specific errors (300-399).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ProofError {
+    ProofAlreadyRegistered = 300,
+    ProofNotFound = 301,
+    ProofAlreadyRevoked = 302,
+    ProofExpired = 303,
+    InvalidSchemaVersion = 304,
+    SchemaVersionNotApproved = 305,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

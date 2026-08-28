@@ -6,6 +6,15 @@ on:
     branches: [develop]
 
 jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check documentation links and code references
+        run: python3 scripts/check-doc-links.py
+      - name: Check generated API reference
+        run: python3 scripts/generate-reference.py --check
+
   contracts:
     runs-on: ubuntu-latest
     steps:
@@ -19,3 +28,40 @@ jobs:
       - run: cargo test --workspace
       - run: cargo test --doc --workspace
       - run: cargo build --workspace
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      # Pinned exact version (#66) — an unpinned `cargo install cargo-llvm-cov`
+      # would let the tool's own output format or default flags drift under
+      # CI without anyone choosing that.
+      - run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Generate workspace coverage report
+        run: |
+          cargo llvm-cov --workspace --summary-only 2>&1 | tee coverage-summary.txt
+          cargo llvm-cov report --json --output-path coverage.json
+        # See docs/testing.md for what's covered, what's excluded and why,
+        # and the critical-path minimums this job checks below.
+      - name: Enforce critical-path coverage minimums
+        run: python3 scripts/check-coverage-gates.py coverage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage-summary.txt
+            coverage.json
+          retention-days: 30
+
+  resource-budgets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run resource budget regression tests
+        run: cargo test -p resource-budget-tests --release
