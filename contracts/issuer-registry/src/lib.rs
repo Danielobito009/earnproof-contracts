@@ -363,8 +363,8 @@ mod test {
     use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
     use earnproof_shared::{IssuerError, IssuerStatus, TTL_THRESHOLD_LEDGERS};
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Events},
-        Address, BytesN, Env,
+        testutils::{storage::Persistent as _, Address as _, Events, MockAuth, MockAuthInvoke},
+        Address, BytesN, Env, IntoVal,
     };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
@@ -694,5 +694,62 @@ mod test {
         // revoke
         client.revoke_issuer(&issuer_id);
         assert_eq!(env.events().all().events().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Auth mock-parity (#72)
+    //
+    // Every test above uses env.mock_all_auths() via setup(), which lets any
+    // caller through unconditionally — it can never observe that
+    // revoke_issuer actually demands the *admin's* signature specifically.
+    // This test scopes mock_auths to a real, valid signer that is not the
+    // admin (the registered issuer's own address) and asserts the contract's
+    // real require_auth(&admin) check rejects it — proving the issuer's own
+    // valid signature cannot authorize an admin-only operation on itself.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn revoke_issuer_rejects_a_valid_signature_from_the_issuer_itself() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        client.initialize(&admin);
+
+        // mock_auths (below) registers a stand-in auth contract at each
+        // mocked address, so the address must be one the test Env generated
+        // itself — a hardcoded G-string constant (like ISSUER_ONE, used by
+        // every other test in this module under mock_all_auths()) is not a
+        // valid registration target here.
+        let issuer_id = bytes(&env, 1);
+        let issuer_address = Address::generate(&env);
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 2));
+
+        // From here on, only the issuer's own signature is authorized for
+        // this specific revoke_issuer invocation — not a blanket
+        // mock_all_auths(). The issuer's signature is genuinely valid (it is
+        // a real, well-formed authorization the host will accept); it is
+        // simply for the wrong address. If require_auth(&admin) were ever
+        // weakened to accept any authorized caller, this is what would stop
+        // silently passing.
+        env.mock_auths(&[MockAuth {
+            address: &issuer_address,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "revoke_issuer",
+                args: (issuer_id.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = client.try_revoke_issuer(&issuer_id);
+        assert!(
+            result.is_err(),
+            "the issuer's own valid signature must not authorize revoking itself; only the admin's signature may"
+        );
+
+        // And unrevoked: the rejected call must not have mutated state.
+        assert_eq!(client.get_issuer(&issuer_id).status, IssuerStatus::Active);
     }
 }
