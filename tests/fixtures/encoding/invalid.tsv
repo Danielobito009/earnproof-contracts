@@ -1,0 +1,4 @@
+# id\tkind\tsource\thex
+empty-source\tsha256\t\t0000000000000000000000000000000000000000000000000000000000000000
+malformed-hex\tsha256\tproof\tzz
+wrong-length\tsha256\tproof\t00

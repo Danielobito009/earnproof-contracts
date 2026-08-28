@@ -8,7 +8,9 @@ members = [
   "tests/events",
   "tests/emergency",
   "tests/budgets",
-  "tests/cross-contract"
+  "tests/cross-contract",
+  "tests/time",
+  "tests/encoding"
 ]
 resolver = "2"
 
