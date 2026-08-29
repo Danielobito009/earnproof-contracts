@@ -9,6 +9,7 @@ members = [
   "tests/emergency",
   "tests/budgets",
   "tests/cross-contract",
+  "tests/property"
   "tests/time",
   "tests/encoding"
 ]
@@ -22,6 +23,7 @@ repository = "https://github.com/veridatum-labs/earnproof-contracts"
 [workspace.dependencies]
 soroban-sdk = "27.0.0"
 earnproof-shared = { path = "packages/shared" }
+proptest = "1.4"
 
 [profile.release]
 overflow-checks = true
