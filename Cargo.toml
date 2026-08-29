@@ -8,8 +8,9 @@ members = [
   "tests/events",
   "tests/emergency",
   "tests/budgets",
+  "tests/authorization",
   "tests/cross-contract",
-  "tests/property"
+  "tests/property",
   "tests/time",
   "tests/encoding"
 ]
