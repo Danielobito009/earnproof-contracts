@@ -968,6 +968,7 @@ mod test {
         client.revoke_issuer(&issuer_id);
         assert_eq!(env.events().all().events().len(), 1);
     }
+}
 
     // -----------------------------------------------------------------------
     // Auth mock-parity (#72)

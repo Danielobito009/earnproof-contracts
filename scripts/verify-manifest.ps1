@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 
 function Assert-ContractId($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name contract ID is missing."
   }
 
@@ -34,31 +34,31 @@ function Assert-ContractId($Name, $Value) {
     throw "$Name contract ID is still a placeholder."
   }
 
-  if ($Value -notmatch "^C[A-Z2-7]{55}$") {
+  if ($value -notmatch "^C[A-Z2-7]{55}$") {
     throw "$Name contract ID does not look like a Stellar contract address: $Value"
   }
 }
 
 function Assert-Sha256($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name WASM hash is missing."
   }
 
-  if ($Value -match "0{16,}" -and -not $AllowPlaceholders) {
+  if ($Value -match "0{16,}" -and $not $AllowPlaceholders) {
     throw "$Name WASM hash is still a placeholder."
   }
 
-  if ($Value -notmatch "^[a-fA-F0-9]{64}$") {
+  if ($value -notmatch "^[a-fA-F0-9]{64}$") {
     throw "$Name WASM hash must be a 64-character SHA-256 hex string."
   }
 }
 
 function Assert-StellarAddress($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name address is missing."
   }
 
-  if ($Value -notmatch "^G[A-Z2-7]{55}$") {
+  if ($value -notmatch "^G[A-Z2-7]{55}$") {
     throw "$Name address does not look like a Stellar public key: $Value"
   }
 }
@@ -262,6 +262,14 @@ if (-not $manifestJson.deployedAt) {
 Assert-ContractId "protocolConfig" $manifestJson.contracts.protocolConfig
 Assert-ContractId "issuerRegistry" $manifestJson.contracts.issuerRegistry
 Assert-ContractId "proofRegistry" $manifestJson.contracts.proofRegistry
+
+if (-not $manifestJson.admins) {
+  throw "admins section is missing. Must include expected admin addresses for all contracts."
+}
+
+foreach ($contractName in @("protocolConfig", "issuerRegistry", "proofRegistry")) {
+  Assert-StellarAddress "$contractName admin" $manifestJson.admins.$contractName
+}
 
 if ($manifestJson.initialIssuer) {
   Assert-StellarAddress "initialIssuer" $manifestJson.initialIssuer.address
