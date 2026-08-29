@@ -65,3 +65,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run resource budget regression tests
         run: cargo test -p resource-budget-tests --release
+
+  # Bounded mutation testing for the security-critical authorization/validation
+  # branches (see tests/mutation/ and docs/testing.md). This is a full mutant run
+  # and is intentionally not part of the fast PR loop: it runs on a weekly
+  # schedule and on demand, and enforces the reviewed mutation score.
+  mutation:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Run bounded mutation profile and enforce reviewed score
+        run: pwsh -NonInteractive -File scripts/mutation-test.ps1
+      - name: Prove the gate catches seeded mutations
+        run: pwsh -NonInteractive -File scripts/mutation-test.ps1 -SelfTest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-out
+          path: mutants.out

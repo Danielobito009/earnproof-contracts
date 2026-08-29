@@ -1,0 +1,10 @@
+diff --git a/contracts/proof-registry/src/lib.rs b/contracts/proof-registry/src/lib.rs
+--- a/contracts/proof-registry/src/lib.rs
++++ b/contracts/proof-registry/src/lib.rs
+@@ -134,5 +134,5 @@ impl ProofRegistryContract {
+             Ok(record) => {
+-                record.status == ProofStatus::Active
++                record.status != ProofStatus::Active
+                     && env.ledger().timestamp() <= record.expires_at
+             }
+             Err(_) => false,
