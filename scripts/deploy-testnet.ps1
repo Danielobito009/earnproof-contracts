@@ -133,6 +133,24 @@ try {
   Invoke-Step "Register backend issuer" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $issuerId, "--", "register_issuer", "--issuer_id_hash", $issuerIdHash, "--issuer_address", $IssuerAddress, "--metadata_hash", $issuerMetadataHash)
   Invoke-Step "Initialize proof-registry" @("stellar", "contract", "invoke", "--source", $Source, "--network", $Network, "--auth-mode", "root", "--auto-sign", "--id", $proofId, "--", "initialize", "--admin", $Admin, "--issuer_registry", $issuerId, "--protocol_config", $protocolId)
 
+  # Collect build provenance metadata for traceability.
+  $rustToolchain = (& rustup show active-toolchain 2>&1 | Select-String -Pattern "^(\S+)" | ForEach-Object { $_.Matches[0].Groups[1].Value }) 2>$null
+  if (-not $rustToolchain) { $rustToolchain = "stable" }
+  $gitCommit = (& git rev-parse HEAD 2>&1) 2>$null
+  if (-not $gitCommit -or $LASTEXITCODE -ne 0) { $gitCommit = "unknown" }
+
+  # contractVersion 1 is the initial deployment version — matches the value
+  # stored in each contract's ContractVersion instance key after initialize().
+  $initialContractVersion = 1
+
+  $buildMeta = [ordered]@{
+    rustToolchain      = "$rustToolchain"
+    cargoPackageVersion = "0.1.0"
+    sorobanSdkVersion  = "27.0.0"
+    buildProfile       = "release"
+    gitCommit          = "$gitCommit"
+  }
+
   $manifest = [ordered]@{
     network = "stellar-$Network"
     deployedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -150,16 +168,22 @@ try {
     }
     wasm = [ordered]@{
       protocolConfig = [ordered]@{
-        path = "target/wasm32v1-none/release/protocol_config.wasm"
-        sha256 = Get-Sha256 $protocolWasm
+        path            = "target/wasm32v1-none/release/protocol_config.wasm"
+        sha256          = Get-Sha256 $protocolWasm
+        contractVersion = $initialContractVersion
+        buildMetadata   = $buildMeta
       }
       issuerRegistry = [ordered]@{
-        path = "target/wasm32v1-none/release/issuer_registry.wasm"
-        sha256 = Get-Sha256 $issuerWasm
+        path            = "target/wasm32v1-none/release/issuer_registry.wasm"
+        sha256          = Get-Sha256 $issuerWasm
+        contractVersion = $initialContractVersion
+        buildMetadata   = $buildMeta
       }
       proofRegistry = [ordered]@{
-        path = "target/wasm32v1-none/release/proof_registry.wasm"
-        sha256 = Get-Sha256 $proofWasm
+        path            = "target/wasm32v1-none/release/proof_registry.wasm"
+        sha256          = Get-Sha256 $proofWasm
+        contractVersion = $initialContractVersion
+        buildMetadata   = $buildMeta
       }
     }
     schemaVersions = @(1)

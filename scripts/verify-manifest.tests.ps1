@@ -578,6 +578,52 @@ Invoke-Test "breaking release without an approver fails" {
 }
 
 # ---------------------------------------------------------------------------
+# Manifest secret-hygiene scan (#64)
+# ---------------------------------------------------------------------------
+# The manifest itself — not just an accompanying release note — must never
+# contain secret-shaped values. Mutates a copy of the real testnet manifest
+# rather than a hand-written stub, for the same reason New-MutatedRelease
+# does above.
+
+function New-MutatedManifest {
+  param([scriptblock]$Mutate)
+
+  $text = Get-Content $TestnetManifest -Raw
+  $mutated = & $Mutate $text
+  $temp = [System.IO.Path]::GetTempFileName() + ".json"
+  Set-Content -Path $temp -Value $mutated -Encoding UTF8
+  return $temp
+}
+
+# 20. A manifest containing a Stellar secret seed is rejected
+Invoke-Test "manifest containing a secret seed fails" {
+  $temp = New-MutatedManifest {
+    param($t)
+    $t -replace '"source": "deployer"', '"source": "SBQNSHKUSA3EWL2WVMMGZJIA3WWZTPGSXVSCJHW6NM4PZ3O2GEOAV7DS"'
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$temp`"") `
+      -OutputPattern "(?i)secret seed"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# 21. A manifest with a credential-shaped field assignment is rejected
+Invoke-Test "manifest containing an API key assignment fails" {
+  $temp = New-MutatedManifest {
+    param($t)
+    $t -replace '"notes":', '"apiKey": "sk_live_abcdef1234567890",' + "`n  " + '"notes":'
+  }
+  try {
+    Assert-ExitNonZero `
+      -ScriptArgs @("-Manifest `"$temp`"") `
+      -OutputPattern "(?i)secret-like content"
+  }
+  finally { Remove-Item $temp -ErrorAction SilentlyContinue }
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

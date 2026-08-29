@@ -1,0 +1,22 @@
+[package]
+name = "contract-property-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+earnproof-shared = { path = "../../packages/shared" }
+issuer-registry = { path = "../../contracts/issuer-registry" }
+proof-registry = { path = "../../contracts/proof-registry" }
+protocol-config = { path = "../../contracts/protocol-config" }
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "state_machine"
+path = "state_machine.rs"

@@ -1,0 +1,10 @@
+# Build artifacts and WASM files
+*.wasm
+*.wasm.map
+
+# Bindings are generated and should be committed
+# Do not add bindings/* to gitignore
+
+# Only ignore temporary generation files
+*.tmp
+*.log

@@ -26,6 +26,37 @@ enum DataKey {
     IssuerRegistry,
     ProtocolConfig,
     Proof(BytesN<32>),
+    /// Allowlist entry: maps a WASM hash to the target contract version.
+    AllowedWasm(BytesN<32>),
+    /// Monotonically-increasing contract version.  Prevents downgrade.
+    ContractVersion,
+}
+
+// ── upgrade events ────────────────────────────────────────────────────────────
+
+/// Emitted when the admin adds a WASM hash to the upgrade allowlist.
+#[contractevent]
+pub struct UpgradeAllowlisted {
+    pub wasm_hash: BytesN<32>,
+    pub new_contract_version: u32,
+    pub approved_by: Address,
+}
+
+/// Emitted when the admin removes a WASM hash from the allowlist without
+/// applying it.
+#[contractevent]
+pub struct UpgradeRevoked {
+    pub wasm_hash: BytesN<32>,
+    pub revoked_by: Address,
+}
+
+/// Emitted when a WASM upgrade is successfully applied.
+#[contractevent]
+pub struct ContractUpgraded {
+    pub new_wasm_hash: BytesN<32>,
+    pub old_contract_version: u32,
+    pub new_contract_version: u32,
+    pub upgraded_by: Address,
 }
 
 #[contractimpl]
@@ -48,6 +79,9 @@ impl ProofRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ProtocolConfig, &protocol_config);
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &1_u32);
         Self::extend_instance_ttl(env);
         Ok(())
     }
@@ -167,7 +201,113 @@ impl ProofRegistryContract {
             .ok_or(ContractError::NotInitialized)
     }
 
-    fn set_revoked(env: Env, proof_id_hash: BytesN<32>, by_admin: bool) -> Result<(), ProofError> {
+    // ── upgrade governance ────────────────────────────────────────────────────
+
+    /// Returns the stored monotonic contract version.  Starts at 1.
+    pub fn get_contract_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(0)
+    }
+
+    /// Admin-only: add `wasm_hash` to the upgrade allowlist.
+    ///
+    /// `new_version` must be strictly greater than the current contract
+    /// version to prevent pre-approving a downgrade.
+    pub fn approve_upgrade(env: Env, wasm_hash: BytesN<32>, new_version: u32) {
+        let admin = Self::get_admin(env.clone());
+        Self::require_auth(&admin);
+
+        let current = Self::get_contract_version(env.clone());
+        if new_version <= current {
+            panic!("new_version must be greater than current contract version");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedWasm(wasm_hash.clone()), &new_version);
+        Self::extend_instance_ttl(env.clone());
+
+        UpgradeAllowlisted {
+            wasm_hash,
+            new_contract_version: new_version,
+            approved_by: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Admin-only: remove a hash from the allowlist without applying it.
+    pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) {
+        let admin = Self::get_admin(env.clone());
+        Self::require_auth(&admin);
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
+
+        UpgradeRevoked {
+            wasm_hash,
+            revoked_by: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Returns true when `wasm_hash` is on the allowlist.
+    pub fn is_upgrade_allowed(env: Env, wasm_hash: BytesN<32>) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::AllowedWasm(wasm_hash))
+    }
+
+    /// Admin-only: apply an in-place WASM upgrade.
+    ///
+    /// Requirements:
+    /// 1. Caller is the admin.
+    /// 2. `wasm_hash` is on the allowlist.
+    /// 3. Target version is strictly greater than current (downgrade guard).
+    ///
+    /// On success the allowlist entry is consumed and `ContractVersion` is
+    /// advanced.
+    pub fn upgrade_contract(env: Env, wasm_hash: BytesN<32>) {
+        let admin = Self::get_admin(env.clone());
+        Self::require_auth(&admin);
+
+        let new_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedWasm(wasm_hash.clone()))
+            .expect("wasm hash not on allowlist");
+
+        let old_version = Self::get_contract_version(env.clone());
+        if new_version <= old_version {
+            panic!("upgrade would not advance contract version");
+        }
+
+        // Consume allowlist entry before applying to prevent replay.
+        env.storage()
+            .instance()
+            .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
+
+        env.deployer().update_current_contract_wasm(wasm_hash.clone());
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &new_version);
+        Self::extend_instance_ttl(env.clone());
+
+        ContractUpgraded {
+            new_wasm_hash: wasm_hash,
+            old_contract_version: old_version,
+            new_contract_version: new_version,
+            upgraded_by: admin,
+        }
+        .publish(&env);
+    }
+
+    // ── private helpers ───────────────────────────────────────────────────────
+
+    fn set_revoked(env: Env, proof_id_hash: BytesN<32>, by_admin: bool) {
         let key = DataKey::Proof(proof_id_hash.clone());
         let mut record: ProofRecord = env
             .storage()
@@ -260,6 +400,8 @@ mod test {
             issuer_registry_id,
         )
     }
+
+    // ── existing tests ────────────────────────────────────────────────────────
 
     #[test]
     fn registers_and_validates_proof() {
@@ -391,5 +533,129 @@ mod test {
                     > TTL_THRESHOLD_LEDGERS
             );
         });
+    }
+
+    // ── upgrade governance tests ──────────────────────────────────────────────
+
+    #[test]
+    fn contract_version_initialized_to_one() {
+        let (_env, client, ..) = setup();
+        assert_eq!(client.get_contract_version(), 1);
+    }
+
+    #[test]
+    fn approve_and_check_allowlist() {
+        let (env, client, ..) = setup();
+        let hash = bytes(&env, 0xab);
+
+        assert!(!client.is_upgrade_allowed(&hash));
+        client.approve_upgrade(&hash, &2);
+        assert!(client.is_upgrade_allowed(&hash));
+    }
+
+    #[test]
+    fn revoke_removes_from_allowlist() {
+        let (env, client, ..) = setup();
+        let hash = bytes(&env, 0xcd);
+
+        client.approve_upgrade(&hash, &2);
+        client.revoke_upgrade(&hash);
+        assert!(!client.is_upgrade_allowed(&hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "new_version must be greater than current contract version")]
+    fn approve_upgrade_rejects_downgrade_version() {
+        let (env, client, ..) = setup();
+        client.approve_upgrade(&bytes(&env, 1), &1);
+    }
+
+    #[test]
+    #[should_panic(expected = "wasm hash not on allowlist")]
+    fn upgrade_contract_rejects_non_allowlisted_hash() {
+        let (env, client, ..) = setup();
+        client.upgrade_contract(&bytes(&env, 0xff));
+    }
+
+    #[test]
+    #[should_panic]
+    fn upgrade_contract_requires_admin_auth() {
+        let env = Env::default();
+        let protocol_config_id = env.register(ProtocolConfigContract, ());
+        let issuer_registry_id = env.register(IssuerRegistryContract, ());
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+        let issuer_id = bytes(&env, 9);
+
+        env.mock_all_auths();
+        let pc_client = ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let ir_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        pc_client.initialize(&admin);
+        pc_client.approve_schema_version(&1);
+        ir_client.initialize(&admin);
+        ir_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+
+        let hash = BytesN::from_array(&env, &[0xde; 32]);
+        client.approve_upgrade(&hash, &2);
+        env.set_auths(&[]);
+
+        client.upgrade_contract(&hash);
+    }
+
+    #[test]
+    fn upgrade_advances_version_and_consumes_allowlist() {
+        let (env, client, ..) = setup();
+        let hash = bytes(&env, 0x42);
+
+        client.approve_upgrade(&hash, &2);
+        client.upgrade_contract(&hash);
+
+        assert_eq!(client.get_contract_version(), 2);
+        assert!(!client.is_upgrade_allowed(&hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "wasm hash not on allowlist")]
+    fn upgrade_hash_cannot_be_replayed() {
+        let (env, client, ..) = setup();
+        let hash = bytes(&env, 0x42);
+
+        client.approve_upgrade(&hash, &2);
+        client.upgrade_contract(&hash);
+        client.upgrade_contract(&hash);
+    }
+
+    /// Persistent proof state must survive an upgrade.
+    #[test]
+    fn state_preserved_across_upgrade() {
+        let (env, client, ..) = setup();
+        let proof_id = bytes(&env, 1);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        client.register_proof(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000);
+        assert!(client.is_valid_proof(&proof_id));
+
+        let hash = bytes(&env, 0x77);
+        client.approve_upgrade(&hash, &2);
+        client.upgrade_contract(&hash);
+
+        assert!(client.is_valid_proof(&proof_id));
+        assert_eq!(client.get_contract_version(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "new_version must be greater than current contract version")]
+    fn cannot_re_approve_old_version_after_upgrade() {
+        let (env, client, ..) = setup();
+        let hash_v2 = bytes(&env, 0x01);
+        let old_hash = bytes(&env, 0x02);
+
+        client.approve_upgrade(&hash_v2, &2);
+        client.upgrade_contract(&hash_v2);
+
+        client.approve_upgrade(&old_hash, &1);
     }
 }
