@@ -32,6 +32,9 @@ Implemented:
 - Testnet deployment scripts using `stellar contract build`, issuer registration, and manifest validation
 - Contract tests exercise authorization through Soroban mocked auth instead of compiling out `require_auth`
 - Buildable contract crates against `soroban-sdk`
+- Code-linked lifecycle invariants in [`docs/invariants/`](docs/invariants/)
+- Deterministic ledger-time boundary tests and backend encoding vectors
+- Generated API reference in [`docs/reference/`](docs/reference/)
 
 The `protocol-config` contract currently supports:
 

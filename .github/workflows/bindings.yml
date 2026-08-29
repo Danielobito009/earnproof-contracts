@@ -1,0 +1,153 @@
+name: Contract Bindings
+
+on:
+  push:
+    paths:
+      - "contracts/**/*.rs"
+      - "artifacts/bindings/**"
+      - "scripts/generate-bindings.ps1"
+      - ".github/workflows/bindings.yml"
+  pull_request:
+    paths:
+      - "contracts/**/*.rs"
+      - "artifacts/bindings/**"
+      - "scripts/generate-bindings.ps1"
+
+jobs:
+  check-bindings:
+    name: Detect Stale Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Regenerate bindings
+        shell: pwsh
+        run: |
+          # Install PowerShell if needed (usually pre-installed on ubuntu-latest)
+          pwsh -Command {
+            Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+            & ./scripts/generate-bindings.ps1 -Network testnet
+          }
+
+      - name: Check for stale bindings
+        run: |
+          if ! git diff --exit-code artifacts/bindings/; then
+            echo "❌ Bindings are stale!"
+            echo "Contract interfaces changed but bindings were not regenerated."
+            echo ""
+            echo "Run ./scripts/generate-bindings.ps1 and commit the changes."
+            echo ""
+            git diff artifacts/bindings/
+            exit 1
+          fi
+          echo "✅ Bindings are up to date"
+
+  typecheck-bindings:
+    name: TypeScript Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Stellar SDK
+        run: npm install --save-dev @stellar/stellar-sdk typescript
+
+      - name: TypeScript compile check
+        run: npx tsc --noEmit --strict artifacts/bindings/types.ts
+
+      - name: Check client imports
+        run: |
+          # Verify client.ts imports are resolvable
+          node -e "
+            const fs = require('fs');
+            const content = fs.readFileSync('artifacts/bindings/client.ts', 'utf8');
+            const imports = content.match(/from ['\"](.*?)['\"](?!.*from)/g);
+            if (!imports) {
+              console.log('✅ No problematic imports found');
+              process.exit(0);
+            }
+            const hasExternal = imports.some(i => 
+              i.includes('@stellar') || i.includes('./types')
+            );
+            if (!hasExternal) {
+              console.log('❌ Client imports external modules without proper declarations');
+              process.exit(1);
+            }
+            console.log('✅ Client imports look good');
+          "
+
+  validate-provenance:
+    name: Validate Provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check provenance.json
+        run: |
+          if [ ! -f "artifacts/bindings/provenance.json" ]; then
+            echo "❌ provenance.json is missing"
+            exit 1
+          fi
+
+          # Validate JSON structure
+          jq '.sourceCommit, .generatedAt, .stellarCliVersion, .contracts' artifacts/bindings/provenance.json > /dev/null
+          if [ $? -ne 0 ]; then
+            echo "❌ provenance.json has invalid structure"
+            exit 1
+          fi
+
+          echo "✅ provenance.json is valid"
+          cat artifacts/bindings/provenance.json | jq .
+
+  lint-bindings:
+    name: Lint Generated Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install linting tools
+        run: npm install --save-dev eslint @typescript-eslint/eslint-plugin @typescript-eslint/parser
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "Checking for hardcoded secrets in bindings..."
+          if grep -r "S[A-Z2-7]\{55\}" artifacts/bindings/ 2>/dev/null; then
+            echo "❌ Found potential hardcoded secret keys in bindings"
+            exit 1
+          fi
+          if grep -r "C[A-Z2-7]\{55\}" artifacts/bindings/client.ts 2>/dev/null | grep -v "contractId"; then
+            echo "❌ Found potential hardcoded contract IDs in client code"
+            exit 1
+          fi
+          echo "✅ No hardcoded secrets detected"
+
+      - name: Check documentation
+        run: |
+          echo "Verifying documentation..."
+          if ! grep -q "AUTO-GENERATED" artifacts/bindings/types.ts; then
+            echo "❌ Missing AUTO-GENERATED warning in types.ts"
+            exit 1
+          fi
+          if ! grep -q "AUTO-GENERATED" artifacts/bindings/client.ts; then
+            echo "❌ Missing AUTO-GENERATED warning in client.ts"
+            exit 1
+          fi
+          if ! grep -q "Regenerate with" artifacts/bindings/types.ts; then
+            echo "❌ Missing regeneration instructions in types.ts"
+            exit 1
+          fi
+          echo "✅ Documentation headers are present"

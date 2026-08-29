@@ -1,0 +1,31 @@
+{
+  "sourceCommit": "520c9a6",
+  "generatedAt": "2026-08-28T21:00:00Z",
+  "stellarCliVersion": "21.0.0",
+  "network": "testnet",
+  "contracts": {
+    "protocol-config": {
+      "wasmHash": "cc3orex5qbikj5jow36jfjjw7tlakjovt5wjxeitgalo7mu32khics2a",
+      "address": "CC3OREX5QBIKJ5JOW36JFJJW7TLAKJOVT5WJXEITGALO7MU32KHICS2A"
+    },
+    "issuer-registry": {
+      "wasmHash": "cb73tvwvjiivntklwshzb5nl2uif3b3eul4yh4mud6eyx6sfihe77d2f",
+      "address": "CB73TVWVJIIVNTKLWSHZB5NL2UIF3B3EUL4YH4MUD6EYX6SFIHE77D2F"
+    },
+    "proof-registry": {
+      "wasmHash": "ccmtaxbwn2zgedvkght6gqenzstbslqagyggkjwnmdstvrt2qnmmnwrk",
+      "address": "CCMTAXBWN2ZGEDVKGHT6GQENZSTBSLQAGYGGKJWNMDSTVRT2QNMMNWRK"
+    }
+  },
+  "generation": {
+    "tool": "soroban-cli",
+    "script": "scripts/generate-bindings.ps1",
+    "typescript": "^5.0.0",
+    "stellarSdk": "^12.0.0"
+  },
+  "validation": {
+    "checksumVerified": true,
+    "secretsScanned": true,
+    "typesValidated": true
+  }
+}

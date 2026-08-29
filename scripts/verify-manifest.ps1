@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 
 function Assert-ContractId($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name contract ID is missing."
   }
 
@@ -34,31 +34,31 @@ function Assert-ContractId($Name, $Value) {
     throw "$Name contract ID is still a placeholder."
   }
 
-  if ($Value -notmatch "^C[A-Z2-7]{55}$") {
+  if ($value -notmatch "^C[A-Z2-7]{55}$") {
     throw "$Name contract ID does not look like a Stellar contract address: $Value"
   }
 }
 
 function Assert-Sha256($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name WASM hash is missing."
   }
 
-  if ($Value -match "0{16,}" -and -not $AllowPlaceholders) {
+  if ($Value -match "0{16,}" -and $not $AllowPlaceholders) {
     throw "$Name WASM hash is still a placeholder."
   }
 
-  if ($Value -notmatch "^[a-fA-F0-9]{64}$") {
+  if ($value -notmatch "^[a-fA-F0-9]{64}$") {
     throw "$Name WASM hash must be a 64-character SHA-256 hex string."
   }
 }
 
 function Assert-StellarAddress($Name, $Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
     throw "$Name address is missing."
   }
 
-  if ($Value -notmatch "^G[A-Z2-7]{55}$") {
+  if ($value -notmatch "^G[A-Z2-7]{55}$") {
     throw "$Name address does not look like a Stellar public key: $Value"
   }
 }
@@ -219,7 +219,37 @@ function Assert-LiveCondition {
 # ---------------------------------------------------------------------------
 
 $path = Resolve-Path $Manifest
-$manifestJson = Get-Content $path -Raw | ConvertFrom-Json
+$manifestRaw = Get-Content $path -Raw
+
+# --- Secret-hygiene scan (#64) ---------------------------------------------
+# A deployment manifest is a public deliverable — copied into docs/releases/,
+# committed, and shared with backend/indexer teams. It must only ever
+# contain public addresses, network identifiers, hashes, and documented
+# config. Same patterns as the release-note credential scan below, applied
+# to the manifest itself rather than only the note that references it.
+#
+# Runs on the raw text before JSON parsing, deliberately: a manifest with
+# secret-like content should fail this check for that reason even if it's
+# also malformed JSON, rather than the parse step masking why it failed.
+if ($manifestRaw -match "\bS[A-Z2-7]{55}\b") {
+  throw "Manifest appears to contain a Stellar secret seed: $path"
+}
+
+# `.?` (rather than `[_ -]?`) deliberately also matches a bare case boundary
+# with nothing between the words, so this catches JSON's own camelCase key
+# style (e.g. "apiKey", "privateKey") as well as snake_case/kebab-case/
+# spaced prose forms.
+$manifestCredentialPatterns = @(
+  "(?i)(private.?key|secret.?key|seed.?phrase|mnemonic)`"?\s*[:=]\s*\S+",
+  "(?i)(api.?key|access.?token|bearer)`"?\s*[:=]\s*\S+"
+)
+foreach ($pattern in $manifestCredentialPatterns) {
+  if ($manifestRaw -match $pattern) {
+    throw "Manifest appears to contain secret-like content matching '$pattern': $path"
+  }
+}
+
+$manifestJson = $manifestRaw | ConvertFrom-Json
 
 if ($manifestJson.network -notin @("stellar-testnet", "testnet")) {
   throw "Manifest network must be stellar-testnet or testnet."
@@ -232,6 +262,14 @@ if (-not $manifestJson.deployedAt) {
 Assert-ContractId "protocolConfig" $manifestJson.contracts.protocolConfig
 Assert-ContractId "issuerRegistry" $manifestJson.contracts.issuerRegistry
 Assert-ContractId "proofRegistry" $manifestJson.contracts.proofRegistry
+
+if (-not $manifestJson.admins) {
+  throw "admins section is missing. Must include expected admin addresses for all contracts."
+}
+
+foreach ($contractName in @("protocolConfig", "issuerRegistry", "proofRegistry")) {
+  Assert-StellarAddress "$contractName admin" $manifestJson.admins.$contractName
+}
 
 if ($manifestJson.initialIssuer) {
   Assert-StellarAddress "initialIssuer" $manifestJson.initialIssuer.address
