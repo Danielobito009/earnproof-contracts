@@ -1,0 +1,4 @@
+# Seeded mutation patches must be byte-for-byte stable across platforms so the
+# mutation self-test (scripts/mutation-test.ps1 -SelfTest) can apply them with
+# `git apply` regardless of the checkout's autocrlf setting.
+tests/mutation/seeds/*.patch -text

@@ -1,0 +1,11 @@
+diff --git a/contracts/protocol-config/src/lib.rs b/contracts/protocol-config/src/lib.rs
+--- a/contracts/protocol-config/src/lib.rs
++++ b/contracts/protocol-config/src/lib.rs
+@@ -89,7 +89,6 @@ impl ProtocolConfigContract {
+         let admin = Self::get_admin(env.clone())?;
+-        Self::require_auth(&admin);
+         env.storage().instance().set(&DataKey::Paused, &true);
+         Self::bump_config_version(env.clone());
+         Paused { paused: true }.publish(&env);
+         Ok(())
+     }

@@ -1,0 +1,22 @@
+# Bounded mutation-testing profile for EarnProof security-critical controls.
+#
+# This file is the "bounded target set" referenced in docs/testing.md and
+# issue #38. It restricts cargo-mutants to the authorization and validation
+# branches in the three on-chain contracts, so `cargo mutants` can be run by a
+# contributor with no extra flags and still finish in a reasonable time.
+#
+# The reviewed mutation-score policy (zero missed mutants in this set) is
+# enforced by scripts/mutation-test.ps1 and by the `mutation` job in
+# .github/workflows/ci.yml.
+
+# Only generate mutants in the contract sources. The shared types crate and the
+# tests/ harnesses are excluded: the shared crate holds no logic, and the test
+# harnesses are exercised by their own unit tests rather than shipped.
+examine_globs = ["contracts/**/src/lib.rs"]
+
+# Run the whole workspace test suite against every mutant, not just the
+# per-contract unit tests. The security-critical mutations this profile targets
+# (removed `require_auth`, inverted status/expiry/equality checks) are only
+# observable through the integration suites in tests/, because the in-contract
+# unit tests call `env.mock_all_auths()`.
+test_workspace = true
