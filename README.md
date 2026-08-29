@@ -32,6 +32,9 @@ Implemented:
 - Testnet deployment scripts using `stellar contract build`, issuer registration, and manifest validation
 - Contract tests exercise authorization through Soroban mocked auth instead of compiling out `require_auth`
 - Buildable contract crates against `soroban-sdk`
+- Code-linked lifecycle invariants in [`docs/invariants/`](docs/invariants/)
+- Deterministic ledger-time boundary tests and backend encoding vectors
+- Generated API reference in [`docs/reference/`](docs/reference/)
 
 The `protocol-config` contract currently supports:
 
@@ -136,6 +139,12 @@ Contracts may store:
 - Issuer-backed proof operations must reject inactive issuers.
 - Sensitive operations should respect protocol pause state.
 - Mainnet deployment should wait for independent review.
+
+## Documentation
+
+- [Storage Model](docs/storage-model.md) — every DataKey variant, TTL policy, lifecycle events, and privacy boundaries
+- [Backend Integration](docs/backend-integration.md) — contract calls and hashing rules for the EarnProof API
+- [Threat Model and Security Review Checklist](docs/threat-model.md) — comprehensive security analysis, threat enumeration, controls, and mainnet release gates
 
 ## Related Repositories
 

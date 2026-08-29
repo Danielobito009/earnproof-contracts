@@ -3,3 +3,5 @@ target
 .env
 test_snapshots
 .DS_Store
+.sandbox-manifest.json
+scripts/local-sandbox/.sandbox-manifest.json
