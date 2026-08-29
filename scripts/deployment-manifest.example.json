@@ -16,15 +16,39 @@
   "wasm": {
     "protocolConfig": {
       "path": "target/wasm32v1-none/release/protocol_config.wasm",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "0000000000000000000000000000000000000000"
+      }
     },
     "issuerRegistry": {
       "path": "target/wasm32v1-none/release/issuer_registry.wasm",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "0000000000000000000000000000000000000000"
+      }
     },
     "proofRegistry": {
       "path": "target/wasm32v1-none/release/proof_registry.wasm",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "0000000000000000000000000000000000000000"
+      }
     }
   },
   "schemaVersions": [1],
