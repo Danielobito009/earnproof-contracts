@@ -16,15 +16,39 @@
   "wasm": {
     "protocolConfig": {
       "path": "target/wasm32v1-none/release/protocol_config.wasm",
-      "sha256": "dd0a2d58bc634f09f94f92b09811714a25f36f4e0bd34c10dbac33238c84d594"
+      "sha256": "dd0a2d58bc634f09f94f92b09811714a25f36f4e0bd34c10dbac33238c84d594",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
     },
     "issuerRegistry": {
       "path": "target/wasm32v1-none/release/issuer_registry.wasm",
-      "sha256": "bc57dd87f98da28779870e2494655fa6cbe8f8d5d6d5fbd4eb4f6a0a59070ec5"
+      "sha256": "bc57dd87f98da28779870e2494655fa6cbe8f8d5d6d5fbd4eb4f6a0a59070ec5",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
     },
     "proofRegistry": {
       "path": "target/wasm32v1-none/release/proof_registry.wasm",
-      "sha256": "4e2a433a775d7fcb1e002cea53a2a0c36c127d3026723da6b7d01491d4a0340c"
+      "sha256": "4e2a433a775d7fcb1e002cea53a2a0c36c127d3026723da6b7d01491d4a0340c",
+      "contractVersion": 1,
+      "buildMetadata": {
+        "rustToolchain": "stable",
+        "cargoPackageVersion": "0.1.0",
+        "sorobanSdkVersion": "27.0.0",
+        "buildProfile": "release",
+        "gitCommit": "initial-deployment"
+      }
     }
   },
   "schemaVersions": [1],
@@ -52,5 +76,5 @@
     "stellar contract deploy --source earnproof-deployer --network testnet --wasm <wasm>",
     "stellar contract invoke --source earnproof-deployer --network testnet --auth-mode root --auto-sign --id <contract> -- <function>"
   ],
-  "notes": "Contract state was verified after initialization with read-only calls. The deployment script now retries transient Stellar RPC transport errors before failing."
+  "notes": "Contract state was verified after initialization with read-only calls. The deployment script now retries transient Stellar RPC transport errors before failing. contractVersion and buildMetadata fields added by feat/contract-upgrades-and-migrations."
 }

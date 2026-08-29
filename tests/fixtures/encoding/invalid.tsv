@@ -1,0 +1,4 @@
+# id	kind	source	hex
+empty-source	sha256		0000000000000000000000000000000000000000000000000000000000000000
+malformed-hex	sha256	proof	zz
+wrong-length	sha256	proof	00

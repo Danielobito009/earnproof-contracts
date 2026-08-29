@@ -1,0 +1,7 @@
+# id	kind	source	hex	BytesN<32> or encoded bytes	notes
+proof-1	sha256	proof:example:1	c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19	c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19	UTF-8, case-sensitive
+commitment-1	sha256	commitment:example:1	7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35	7261c38367d18cd03b133d7011956d1a8a35daf3e379aed2d45cdf33be235f35	UTF-8, case-sensitive
+issuer-1	sha256	issuer:example:1	053b8e36043a20ef299e4f154b78a44f7d2583556f39a6722d2adcbd56f5aaab	053b8e36043a20ef299e4f154b78a44f7d2583556f39a6722d2adcbd56f5aaab	UTF-8, case-sensitive
+metadata-1	sha256	metadata:example:1	e92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558	e92b184606982856761714e76aa125ef86ab5c2dcad7947fe8cd1e5c60c0b558	UTF-8, case-sensitive
+schema-7	u32-be	7	00000007	00000007	unsigned big-endian
+expiration-1700000000	u64-be	1700000000	000000006553f100	000000006553f100	unsigned big-endian
