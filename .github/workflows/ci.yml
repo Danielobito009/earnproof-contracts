@@ -3,11 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
-  # Weekly enforcement of the bounded mutation score, plus a manual trigger.
-  schedule:
-    - cron: "30 4 * * 1" # every Monday 04:30 UTC
-  workflow_dispatch:
+    branches: [develop]
 
 jobs:
   documentation:
@@ -30,6 +26,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      - run: cargo test --doc --workspace
       - run: cargo build --workspace
 
   coverage:

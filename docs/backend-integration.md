@@ -2,6 +2,8 @@
 
 This document lists the contract calls the EarnProof API should use when writing proof commitments, reading issuer status, and validating public proof state.
 
+**See Also:** [Executable Examples](./executable-examples.md) for runnable demonstrations of all contract invocation patterns.
+
 ## Error Handling
 
 All contracts return typed Soroban error codes instead of panic strings. Backend integrations must map these machine-readable codes to appropriate HTTP status codes and user-facing messages.
