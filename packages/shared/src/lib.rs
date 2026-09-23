@@ -14,6 +14,16 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
 
+/// Minimum ledgers between approval and execution (timelock).
+/// Prevents immediate execution of just-approved upgrades.
+/// ~1 day at 5s/ledger = 17,280 ledgers
+pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+
+/// Maximum ledgers an approval remains valid after creation.
+/// Stale approvals expire and must be re-approved.
+/// ~30 days at 5s/ledger = 518_400 ledgers
+pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+
 // A Stellar strkey address (G...) is always exactly 56 ASCII characters.
 // soroban_sdk::String has no .chars() (unlike std::string::String, and
 // unlike Symbol, this isn't even gated off-WASM only - it simply doesn't
@@ -99,6 +109,13 @@ pub enum ContractError {
 
     // Protocol state errors (80-99)
     ProtocolPaused = 80,
+
+    // Upgrade timing errors (90-99)
+    NoUpgradeApproval = 90,
+    UpgradeTimelockNotElapsed = 91,
+    UpgradeApprovalExpired = 92,
+    WasmHashMismatch = 93,
+    InvalidTimingConfig = 94,
 }
 
 /// Issuer-specific errors (200-299).
@@ -143,6 +160,30 @@ pub enum IssuerStatus {
 pub enum ProofStatus {
     Active,
     Revoked,
+}
+
+/// Stores temporal metadata for an upgrade approval.
+///
+/// # Timing invariants
+/// - `created_at` ≤ `earliest_execution` ≤ `expires_at`
+/// - execution is rejected before `earliest_execution`
+/// - execution is rejected at or after `expires_at`
+/// - re-approval resets ALL three fields (no stale reuse)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeApproval {
+    /// WASM hash approved for upgrade
+    pub wasm_hash: BytesN<32>,
+    /// Ledger sequence when approval was created
+    pub created_at: u32,
+    /// Earliest ledger at which execution is permitted
+    /// = created_at + UPGRADE_TIMELOCK_LEDGERS
+    pub earliest_execution: u32,
+    /// Ledger sequence after which approval is invalid
+    /// = created_at + UPGRADE_APPROVAL_EXPIRY_LEDGERS
+    pub expires_at: u32,
+    /// Address that created this approval
+    pub approved_by: Address,
 }
 
 #[contracttype]
