@@ -1,6 +1,9 @@
 #![no_std]
 
-use earnproof_shared::{ContractError, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{
+    ApprovalQuery, ApprovalStatus, ContractError, UpgradeApprovalMetadata, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
+};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contract]
@@ -18,6 +21,9 @@ enum DataKey {
     /// Monotonically-increasing contract version stored in instance storage.
     /// Prevents installing an older (or equal) version over a newer one.
     ContractVersion,
+    /// Upgrade approval metadata: maps a WASM hash to its approval details.
+    /// Stored in persistent storage for off-chain verification.
+    UpgradeApproval(BytesN<32>),
 }
 
 // ── existing events ─────────────────────────────────────────────────────────
@@ -209,6 +215,10 @@ impl ProtocolConfigContract {
     ///
     /// `new_version` must be strictly greater than the currently stored
     /// contract version so that a downgrade cannot be pre-approved.
+    ///
+    /// This function stores complete upgrade approval metadata in persistent
+    /// storage for off-chain verification, including the target hash, version,
+    /// approver, creation ledger, and expiry ledger.
     pub fn approve_upgrade(env: Env, wasm_hash: BytesN<32>, new_version: u32) {
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
 
@@ -219,6 +229,27 @@ impl ProtocolConfigContract {
             panic!("new_version must be greater than current contract version");
         }
 
+        let creation_ledger = env.ledger().sequence();
+        // Approval window: 50 ledgers (approximately 4-5 minutes on Stellar)
+        const APPROVAL_WINDOW_LEDGERS: u32 = 50;
+        let expiry_ledger = creation_ledger.saturating_add(APPROVAL_WINDOW_LEDGERS);
+
+        // Store metadata in persistent storage for off-chain verification
+        let metadata = UpgradeApprovalMetadata {
+            target_hash: wasm_hash.clone(),
+            target_version: new_version,
+            approver: admin.clone(),
+            creation_ledger,
+            execution_ledger: None,
+            expiry_ledger,
+            status: ApprovalStatus::Active,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::UpgradeApproval(wasm_hash.clone()), &metadata);
+
+        // Also store in instance storage for the allowlist check (for quick access)
         env.storage()
             .instance()
             .set(&DataKey::AllowedWasm(wasm_hash.clone()), &new_version);
@@ -234,10 +265,26 @@ impl ProtocolConfigContract {
 
     /// Admin-only: remove a previously allowlisted WASM hash without applying
     /// it.  Safe to call even if the hash was never allowlisted.
+    ///
+    /// If a metadata record exists for this hash, its status is set to Revoked
+    /// for audit purposes. The allowlist entry is always removed.
     pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) {
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
         Self::require_auth(&admin);
 
+        // If metadata exists, mark it as revoked
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApproval(wasm_hash.clone()))
+        {
+            metadata.status = ApprovalStatus::Revoked;
+            env.storage()
+                .persistent()
+                .set(&DataKey::UpgradeApproval(wasm_hash.clone()), &metadata);
+        }
+
+        // Remove from allowlist
         env.storage()
             .instance()
             .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
@@ -254,6 +301,53 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .has(&DataKey::AllowedWasm(wasm_hash))
+    }
+
+    /// Returns upgrade approval metadata for off-chain verification.
+    ///
+    /// # Read-only guarantee
+    /// This function NEVER mutates storage, TTL, or governance state.
+    /// It reads from persistent storage without touching instance storage
+    /// or extending any TTL — callers can query freely without side effects.
+    ///
+    /// # Unknown vs Revoked
+    /// - `ApprovalQuery::NotFound`: no record exists for this hash
+    /// - `ApprovalQuery::Revoked(metadata)`: record exists, was explicitly revoked
+    ///   The distinction matters for auditing: NotFound may mean the approval
+    ///   was never created or was garbage-collected after expiry.
+    ///
+    /// # Arguments
+    /// * `target_hash` - The 32-byte WASM hash to look up
+    pub fn get_upgrade_approval_metadata(env: Env, target_hash: BytesN<32>) -> ApprovalQuery {
+        use earnproof_shared::ApprovalQuery::*;
+        use earnproof_shared::ApprovalStatus::*;
+
+        // Read from persistent storage — never instance (no TTL side effects)
+        let metadata = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApproval(
+                target_hash.clone(),
+            ));
+
+        match metadata {
+            None => NotFound,
+            Some(m) if m.status == Revoked => Revoked(m),
+            Some(m) => {
+                // Check for implicit expiry (window passed without execution)
+                let current_ledger = env.ledger().sequence();
+                if current_ledger > m.expiry_ledger && m.status == Active {
+                    // Return as expired — but DO NOT write this to storage
+                    // (read-only: caller sees expired status without mutating state)
+                    Found(UpgradeApprovalMetadata {
+                        status: Expired,
+                        ..m
+                    })
+                } else {
+                    Found(m)
+                }
+            }
+        }
     }
 
     /// Admin-only: apply an in-place WASM upgrade.
@@ -298,6 +392,21 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &new_version);
+
+        // Update the approval metadata to record execution
+        let current_ledger = env.ledger().sequence();
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApproval(wasm_hash.clone()))
+        {
+            metadata.execution_ledger = Some(current_ledger);
+            metadata.status = ApprovalStatus::Executed;
+            env.storage()
+                .persistent()
+                .set(&DataKey::UpgradeApproval(wasm_hash.clone()), &metadata);
+        }
+
         Self::extend_instance_ttl(env.clone());
 
         ContractUpgraded {
@@ -1165,5 +1274,341 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    // ── approval metadata tests ────────────────────────────────────────────────
+
+    #[test]
+    fn get_metadata_returns_found_for_active_approval() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, admin) = setup();
+        let hash = bytes(&env, 0xab);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Query metadata
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.target_hash, hash);
+                assert_eq!(metadata.target_version, 2);
+                assert_eq!(metadata.approver, admin);
+                assert_eq!(metadata.execution_ledger, None);
+                assert_eq!(metadata.status, ApprovalStatus::Active);
+                assert!(metadata.creation_ledger > 0);
+                assert!(metadata.expiry_ledger > metadata.creation_ledger);
+            }
+            _ => panic!("expected ApprovalQuery::Found"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_executed_after_upgrade_executed() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, admin) = setup();
+        let hash = bytes(&env, 0xcd);
+
+        // Create approval and execute upgrade
+        client.approve_upgrade(&hash, &2);
+        let creation_ledger = env.ledger().sequence();
+        client.upgrade_contract(&hash);
+        let execution_ledger = env.ledger().sequence();
+
+        // Query metadata
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.status, ApprovalStatus::Executed);
+                assert_eq!(metadata.execution_ledger, Some(execution_ledger));
+                assert!(metadata.execution_ledger.unwrap() >= creation_ledger);
+            }
+            _ => panic!("expected ApprovalQuery::Found with Executed status"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_not_found_for_unknown_hash() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0xff);
+
+        // Query hash that was never approved
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::NotFound => {}
+            _ => panic!("expected ApprovalQuery::NotFound"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_revoked_for_explicitly_revoked_approval() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0xee);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Revoke it
+        client.revoke_upgrade(&hash);
+
+        // Query metadata
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Revoked(metadata) => {
+                assert_eq!(metadata.status, ApprovalStatus::Revoked);
+            }
+            _ => panic!("expected ApprovalQuery::Revoked"),
+        }
+    }
+
+    #[test]
+    fn not_found_is_distinct_from_revoked() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let unknown_hash = bytes(&env, 0x11);
+        let revoked_hash = bytes(&env, 0x22);
+
+        // Create and revoke an approval
+        client.approve_upgrade(&revoked_hash, &2);
+        client.revoke_upgrade(&revoked_hash);
+
+        // Query unknown hash
+        let unknown_result = client.get_upgrade_approval_metadata(&unknown_hash);
+        assert!(matches!(unknown_result, ApprovalQuery::NotFound));
+
+        // Query revoked hash
+        let revoked_result = client.get_upgrade_approval_metadata(&revoked_hash);
+        assert!(matches!(revoked_result, ApprovalQuery::Revoked(_)));
+    }
+
+    #[test]
+    fn get_metadata_shows_expired_after_expiry_ledger_passes() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x33);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Get the expiry ledger by reading metadata
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        // Advance past expiry
+        env.ledger().with_sequence(expiry_ledger + 1, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Expired);
+                }
+                _ => panic!("expected ApprovalQuery::Found with Expired status"),
+            }
+        });
+    }
+
+    #[test]
+    fn get_metadata_shows_active_at_exactly_expiry_ledger() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x44);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Get the expiry ledger
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        // At expiry_ledger (boundary), should still be Active
+        env.ledger().with_sequence(expiry_ledger, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Active);
+                }
+                _ => panic!("expected ApprovalQuery::Found with Active status at boundary"),
+            }
+        });
+    }
+
+    #[test]
+    fn get_metadata_does_not_mutate_storage() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x55);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Read metadata multiple times
+        let _result1 = client.get_upgrade_approval_metadata(&hash);
+        let _result2 = client.get_upgrade_approval_metadata(&hash);
+        let _result3 = client.get_upgrade_approval_metadata(&hash);
+
+        // Verify metadata is still there and unchanged
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.execution_ledger, None);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_expired_status_not_written_to_storage() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x66);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        // Get expiry ledger
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        // Advance past expiry and query (sees Expired)
+        env.ledger().with_sequence(expiry_ledger + 1, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Expired);
+                }
+                _ => panic!("expected Found with Expired"),
+            }
+        });
+
+        // Go back to current ledger and verify stored status is still Active
+        let stored_result = client.get_upgrade_approval_metadata(&hash);
+        match stored_result {
+            ApprovalQuery::Found(metadata) => {
+                // Within the valid window, should be Active
+                if env.ledger().sequence() <= metadata.expiry_ledger {
+                    assert_eq!(metadata.status, ApprovalStatus::Active);
+                }
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn approval_metadata_stores_all_required_fields() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, admin) = setup();
+        let hash = bytes(&env, 0x77);
+        let version = 5_u32;
+
+        // Create approval
+        client.approve_upgrade(&hash, &version);
+
+        // Read and verify all fields
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                // target_hash
+                assert_eq!(metadata.target_hash, hash);
+                // target_version
+                assert_eq!(metadata.target_version, version);
+                // approver
+                assert_eq!(metadata.approver, admin);
+                // creation_ledger (must be set)
+                assert!(metadata.creation_ledger > 0);
+                // execution_ledger (None at creation)
+                assert_eq!(metadata.execution_ledger, None);
+                // expiry_ledger (must be > creation)
+                assert!(metadata.expiry_ledger > metadata.creation_ledger);
+                // status
+                use earnproof_shared::ApprovalStatus;
+                assert_eq!(metadata.status, ApprovalStatus::Active);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn execution_ledger_set_when_upgrade_executed() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x88);
+
+        // Create approval
+        client.approve_upgrade(&hash, &2);
+
+        let before_execution = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m.execution_ledger,
+            _ => panic!("expected Found"),
+        };
+
+        // execution_ledger should be None before execution
+        assert_eq!(before_execution, None);
+
+        // Execute upgrade
+        client.upgrade_contract(&hash);
+
+        // execution_ledger should now be set
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                assert!(metadata.execution_ledger.is_some());
+                assert!(metadata.execution_ledger.unwrap() > 0);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn multiple_approvals_independent() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash1 = bytes(&env, 0x99);
+        let hash2 = bytes(&env, 0xaa);
+
+        // Create two approvals
+        client.approve_upgrade(&hash1, &2);
+        client.approve_upgrade(&hash2, &3);
+
+        // Verify they are independent
+        match client.get_upgrade_approval_metadata(&hash1) {
+            ApprovalQuery::Found(m1) => {
+                assert_eq!(m1.target_version, 2);
+
+                match client.get_upgrade_approval_metadata(&hash2) {
+                    ApprovalQuery::Found(m2) => {
+                        assert_eq!(m2.target_version, 3);
+                        assert_ne!(m1.target_hash, m2.target_hash);
+                    }
+                    _ => panic!("expected Found for hash2"),
+                }
+            }
+            _ => panic!("expected Found for hash1"),
+        }
     }
 }
