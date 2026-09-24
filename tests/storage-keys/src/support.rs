@@ -57,8 +57,16 @@ pub fn contract_version_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "ContractVersion"),)
 }
 
+pub fn instance_live_until_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "InstanceLiveUntil"),)
+}
+
 pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
+}
+
+pub fn schema_ttl_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaTtl"), version)
 }
 
 pub fn issuer_registry_key(env: &Env) -> (Symbol,) {
@@ -73,12 +81,24 @@ pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
 }
 
+pub fn issuer_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "IssuerTtl"), id.clone())
+}
+
 pub fn address_issuer_key(env: &Env, address: &Address) -> (Symbol, Address) {
     (Symbol::new(env, "AddressIssuer"), address.clone())
 }
 
+pub fn address_ttl_key(env: &Env, address: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "AddressTtl"), address.clone())
+}
+
 pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
+}
+
+pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofTtl"), id.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +253,11 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    config.pause();
+
+    config.begin_migration(&2, &1);
+    issuers.begin_migration(&2, &1);
+    proofs.begin_migration(&2, &1);
 
     Deployment {
         env,

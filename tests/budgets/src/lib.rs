@@ -39,8 +39,11 @@ mod tests {
     // Protocol Config thresholds
     const PROTOCOL_INIT_CPU_MAX: u64 = 300_000;
     const PROTOCOL_INIT_MEM_MAX: u64 = 100_000;
-    const PROTOCOL_PAUSE_CPU_MAX: u64 = 200_000;
+    // Includes the two fixed-size incident metadata writes added to pause.
+    const PROTOCOL_PAUSE_CPU_MAX: u64 = 230_000;
     const PROTOCOL_PAUSE_MEM_MAX: u64 = 80_000;
+    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 200_000;
+    const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
     const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 250_000;
     const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 90_000;
 
@@ -176,6 +179,28 @@ mod tests {
             "protocol_config.approve_schema_version",
             PROTOCOL_SCHEMA_APPROVE_CPU_MAX,
             PROTOCOL_SCHEMA_APPROVE_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn protocol_config_max_migration_batch_budget() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+
+        client.initialize(&admin);
+        client.begin_migration(&2, &earnproof_shared::MAX_MIGRATION_BATCH);
+        env.cost_estimate().budget().reset_unlimited();
+
+        client.advance_migration(&0, &earnproof_shared::MAX_MIGRATION_BATCH);
+
+        assert_budget(
+            &env,
+            "protocol_config.advance_migration(max_batch)",
+            PROTOCOL_MIGRATION_STEP_CPU_MAX,
+            PROTOCOL_MIGRATION_STEP_MEM_MAX,
         );
     }
 

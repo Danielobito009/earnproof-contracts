@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, Address, BytesN};
+use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol};
 
 pub mod storage_namespaces;
 
@@ -13,6 +13,110 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
+
+/// Storage layout version for the migration checkpoint record.
+pub const MIGRATION_STATUS_VERSION: u32 = 1;
+
+/// Maximum number of records a single migration invocation may commit.
+pub const MAX_MIGRATION_BATCH: u32 = 100;
+
+/// Resumable progress marker shared by every contract upgrade path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationStatus {
+    pub status_version: u32,
+    pub target_contract_version: u32,
+    pub cursor: u32,
+    pub total_items: u32,
+    pub complete: bool,
+}
+
+/// Canonical configuration digest payload version.
+pub const CONFIG_DIGEST_VERSION: u32 = 1;
+
+pub fn protocol_config_digest(
+    env: &Env,
+    admin: &Address,
+    paused: bool,
+    config_version: u32,
+    contract_version: u32,
+) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_protocol_config"),
+        admin.clone(),
+        paused,
+        config_version,
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+pub fn issuer_registry_digest(env: &Env, admin: &Address, contract_version: u32) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_issuer_registry"),
+        admin.clone(),
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+pub fn proof_registry_digest(
+    env: &Env,
+    admin: &Address,
+    issuer_registry: &Address,
+    protocol_config: &Address,
+    contract_version: u32,
+) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_proof_registry"),
+        admin.clone(),
+        issuer_registry.clone(),
+        protocol_config.clone(),
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TtlHealth {
+    Missing,
+    NearExpiry,
+    Healthy,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TtlStatus {
+    pub health: TtlHealth,
+    pub remaining_ledgers: u32,
+    pub threshold_ledgers: u32,
+}
+
+pub fn ttl_status(current_ledger: u32, exists: bool, live_until: Option<u32>) -> TtlStatus {
+    let remaining = live_until
+        .filter(|_| exists)
+        .map(|ledger| ledger.saturating_sub(current_ledger))
+        .unwrap_or(0);
+    let health = if !exists || live_until.is_none() || remaining == 0 {
+        TtlHealth::Missing
+    } else if remaining <= TTL_THRESHOLD_LEDGERS {
+        TtlHealth::NearExpiry
+    } else {
+        TtlHealth::Healthy
+    };
+    TtlStatus {
+        health,
+        remaining_ledgers: remaining,
+        threshold_ledgers: TTL_THRESHOLD_LEDGERS,
+    }
+}
 
 // A Stellar strkey address (G...) is always exactly 56 ASCII characters.
 // soroban_sdk::String has no .chars() (unlike std::string::String, and
