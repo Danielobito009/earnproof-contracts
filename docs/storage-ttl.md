@@ -1,5 +1,26 @@
 # Storage TTL, Expiration, and Restoration
 
+## Observable TTL status
+
+Each contract exposes `get_instance_ttl_status`. Protocol config also exposes
+`get_schema_ttl_status(version)`, issuer registry exposes
+`get_issuer_ttl_status(id_hash)` and `get_address_ttl_status(address)`, and
+proof registry exposes `get_proof_ttl_status(id_hash)`. Callers must name a
+critical key; contracts never enumerate record identifiers.
+
+Soroban does not expose live-entry TTL inspection to contract WASM. The
+contracts therefore store a conservative absolute `live_until` checkpoint
+whenever they extend an instance or persistent entry. Status queries subtract
+the current ledger with saturating arithmetic and return `Healthy`,
+`NearExpiry`, or `Missing` plus the remaining ledgers and threshold. A missing
+checkpoint (including state created before this feature) is reported as
+`Missing`, never guessed. Governance can call `refresh_instance_ttl` after a
+migration or restoration to establish instance tracking.
+
+Status queries only read the target and checkpoint keys. They do not call
+`extend_ttl`; keepalive automation must use the existing paths that explicitly
+maintain the relevant entry.
+
 This document is the operator guide for keeping EarnProof contract state alive on Stellar, and the reference for what happens when it is not. It answers three questions for every storage key the contracts use:
 
 1. How long does the entry live, and what extends it?

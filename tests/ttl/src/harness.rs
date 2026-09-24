@@ -18,8 +18,10 @@
 /// - restoration: use env.storage().persistent().restore() to restore expired footprint
 use soroban_sdk::{testutils::Ledger as _, testutils::LedgerInfo, Env};
 
+#[allow(dead_code)]
 pub struct TtlTestHarness;
 
+#[allow(dead_code)]
 impl TtlTestHarness {
     /// Advance the ledger to a specific sequence number and update timestamp accordingly.
     /// Returns the new sequence number.

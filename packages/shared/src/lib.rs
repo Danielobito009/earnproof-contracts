@@ -14,6 +14,41 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TtlHealth {
+    Missing,
+    NearExpiry,
+    Healthy,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TtlStatus {
+    pub health: TtlHealth,
+    pub remaining_ledgers: u32,
+    pub threshold_ledgers: u32,
+}
+
+pub fn ttl_status(current_ledger: u32, exists: bool, live_until: Option<u32>) -> TtlStatus {
+    let remaining = live_until
+        .filter(|_| exists)
+        .map(|ledger| ledger.saturating_sub(current_ledger))
+        .unwrap_or(0);
+    let health = if !exists || live_until.is_none() || remaining == 0 {
+        TtlHealth::Missing
+    } else if remaining <= TTL_THRESHOLD_LEDGERS {
+        TtlHealth::NearExpiry
+    } else {
+        TtlHealth::Healthy
+    };
+    TtlStatus {
+        health,
+        remaining_ledgers: remaining,
+        threshold_ledgers: TTL_THRESHOLD_LEDGERS,
+    }
+}
+
 // A Stellar strkey address (G...) is always exactly 56 ASCII characters.
 // soroban_sdk::String has no .chars() (unlike std::string::String, and
 // unlike Symbol, this isn't even gated off-WASM only - it simply doesn't

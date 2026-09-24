@@ -1,6 +1,6 @@
 #![no_std]
 
-use earnproof_shared::{ContractError, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{ContractError, TtlStatus, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contract]
@@ -12,6 +12,8 @@ enum DataKey {
     Paused,
     ConfigVersion,
     SchemaVersion(u32),
+    SchemaTtl(u32),
+    InstanceLiveUntil,
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
@@ -193,6 +195,31 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
     }
 
+    pub fn get_instance_ttl_status(env: Env) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage().instance().has(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::InstanceLiveUntil),
+        )
+    }
+
+    pub fn get_schema_ttl_status(env: Env, version: u32) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version)),
+            env.storage().persistent().get(&DataKey::SchemaTtl(version)),
+        )
+    }
+
+    pub fn refresh_instance_ttl(env: Env) -> Result<TtlStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::extend_instance_ttl(env.clone());
+        Ok(Self::get_instance_ttl_status(env))
+    }
+
     // ── upgrade governance ───────────────────────────────────────────────────
 
     /// Returns the stored monotonic contract version (separate from the
@@ -340,14 +367,32 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        let live_until = Self::tracked_live_until(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::InstanceLiveUntil, &live_until);
     }
 
     fn extend_schema_ttl(env: Env, version: u32) {
+        let live_until = Self::tracked_live_until(&env);
+        let tracker = DataKey::SchemaTtl(version);
         env.storage().persistent().extend_ttl(
             &DataKey::SchemaVersion(version),
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );
+        env.storage().persistent().set(&tracker, &live_until);
+        env.storage().persistent().extend_ttl(
+            &tracker,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+    }
+
+    fn tracked_live_until(env: &Env) -> u32 {
+        env.ledger()
+            .sequence()
+            .saturating_add(TTL_EXTEND_TO_LEDGERS.min(env.storage().max_ttl()))
     }
 
     fn require_auth(address: &Address) {
@@ -361,7 +406,10 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::TTL_THRESHOLD_LEDGERS;
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use soroban_sdk::{
+        testutils::storage::{Instance as _, Persistent as _},
+        Address, BytesN, Env,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -612,8 +660,7 @@ mod test {
                     &env,
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
-                ]
-                .into(),
+                ],
                 sub_invokes: &[],
             },
         }]);
@@ -849,9 +896,8 @@ mod test {
 
         // Verify exact state written
         assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
+        assert!(
+            !client.is_paused(),
             "protocol must not be paused after initialization"
         );
         assert_eq!(
@@ -1093,7 +1139,7 @@ mod test {
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
-        assert_eq!(client.is_paused(), false);
+        assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
@@ -1165,5 +1211,85 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    #[test]
+    fn ttl_status_covers_fresh_threshold_expired_restored_and_migrated_state() {
+        let (env, client, _admin) = setup();
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+        assert_eq!(
+            client.get_schema_ttl_status(&99).health,
+            earnproof_shared::TtlHealth::Missing
+        );
+
+        client.approve_schema_version(&1);
+        assert_eq!(
+            client.get_schema_ttl_status(&1).health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+
+        let sequence = env.ledger().sequence();
+        env.as_contract(&client.address, || {
+            env.storage().instance().set(
+                &DataKey::InstanceLiveUntil,
+                &sequence.saturating_add(TTL_THRESHOLD_LEDGERS),
+            );
+        });
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::NearExpiry
+        );
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::InstanceLiveUntil, &sequence);
+        });
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Missing
+        );
+
+        env.as_contract(&client.address, || {
+            env.storage().instance().remove(&DataKey::InstanceLiveUntil);
+        });
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Missing
+        );
+        assert_eq!(
+            client.refresh_instance_ttl().health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+    }
+
+    #[test]
+    fn ttl_status_queries_do_not_extend_storage() {
+        let (env, client, _admin) = setup();
+        client.approve_schema_version(&1);
+        let before = env.as_contract(&client.address, || {
+            (
+                env.storage().instance().get_ttl(),
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::SchemaVersion(1)),
+            )
+        });
+
+        client.get_instance_ttl_status();
+        client.get_schema_ttl_status(&1);
+
+        let after = env.as_contract(&client.address, || {
+            (
+                env.storage().instance().get_ttl(),
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::SchemaVersion(1)),
+            )
+        });
+        assert_eq!(after, before);
     }
 }

@@ -1,4 +1,4 @@
-/// Proof Registry TTL Boundary Tests
+//! Proof Registry TTL Boundary Tests
 
 #[cfg(test)]
 mod tests {
