@@ -9,6 +9,9 @@ pub mod error_catalog;
 
 pub use error_catalog::{Domain, ErrorSpec, Retry, Status, ERROR_CATALOG};
 
+// Export upgrade approval types for use across all contracts
+pub use soroban_sdk::String as SorobanString;
+
 pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 
 /// Target ledgers for extended TTL after triggering a preemptive extension.
@@ -208,6 +211,81 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+}
+
+// ── Upgrade Approval Metadata ──────────────────────────────────────────────────
+// Metadata for an upgrade approval, exposed for off-chain verification.
+//
+// This is the single shared structure used across all contracts that
+// implement upgrade approval workflows. Generated clients see a consistent
+// type regardless of which contract they interact with.
+//
+// # Off-chain verification use cases
+// - Verify an upgrade plan matches the approved hash and version
+// - Check the approval window (creation → expiry) to assess staleness
+// - Confirm the execution ledger matches when approval was consumed
+// - Audit which approver authorized the upgrade
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpgradeApprovalMetadata {
+    /// SHA-256 hash of the WASM bytecode approved for upgrade.
+    /// Operators compare this against the upgrade package hash.
+    pub target_hash: BytesN<32>,
+
+    /// Semantic version string of the target contract version.
+    /// Format: "MAJOR.MINOR.PATCH" (e.g. "1.2.0")
+    pub target_version: u32,
+
+    /// Address that submitted and signed this approval.
+    pub approver: Address,
+
+    /// Ledger sequence when the approval was created.
+    pub creation_ledger: u32,
+
+    /// Ledger sequence when the approved upgrade was executed.
+    /// None if the approval has not yet been consumed.
+    pub execution_ledger: Option<u32>,
+
+    /// Ledger sequence after which this approval expires and cannot be used.
+    pub expiry_ledger: u32,
+
+    /// Current status of this approval.
+    pub status: ApprovalStatus,
+}
+
+/// Unambiguous status for an upgrade approval.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApprovalStatus {
+    /// Approval is valid and within its window.
+    Active,
+
+    /// Approval was used — upgrade has been executed.
+    Executed,
+
+    /// Approval was explicitly revoked before execution.
+    Revoked,
+
+    /// Approval window has passed without execution.
+    Expired,
+}
+
+/// Result of an approval metadata query.
+/// Distinguishes "unknown" from "revoked" unambiguously.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApprovalQuery {
+    /// Approval exists — metadata included.
+    Found(UpgradeApprovalMetadata),
+
+    /// No approval record exists for this hash.
+    /// Distinct from Revoked — the approval never existed or was pruned.
+    NotFound,
+
+    /// Approval existed but was explicitly revoked.
+    /// Included metadata shows who approved and when, for audit purposes.
+    Revoked(UpgradeApprovalMetadata),
 }
 
 // ── Shared Test Utilities ──────────────────────────────────────────────────────

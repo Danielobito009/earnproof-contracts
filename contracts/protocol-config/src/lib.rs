@@ -1,8 +1,9 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, UpgradeApproval, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ApprovalQuery, ApprovalStatus, ContractError, UpgradeApproval, UpgradeApprovalMetadata,
+    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
@@ -21,8 +22,12 @@ enum DataKey {
     /// Monotonically-increasing contract version stored in instance storage.
     /// Prevents installing an older (or equal) version over a newer one.
     ContractVersion,
-    /// Upgrade approval with temporal metadata (timelock and expiry).
+    /// Single active approval slot in instance storage.
+    /// Used for timelock/expiry enforcement at execution time.
     UpgradeApproval,
+    /// Per-hash audit record in persistent storage.
+    /// Enables off-chain verification of approval history.
+    UpgradeApprovalMetadata(BytesN<32>),
 }
 
 // ── existing events ─────────────────────────────────────────────────────────
@@ -212,6 +217,9 @@ impl ProtocolConfigContract {
     /// Admin-only: add `wasm_hash` to the upgrade allowlist and record the
     /// `new_version` that must be installed by that WASM.
     ///
+    /// `new_version` must be strictly greater than the currently stored
+    /// contract version so that a downgrade cannot be pre-approved.
+    ///
     /// Records an upgrade approval with timelock and expiry.
     ///
     /// # Timing
@@ -221,6 +229,10 @@ impl ProtocolConfigContract {
     /// # Re-approval
     /// Re-approval replaces ALL timing metadata. Old timing is
     /// never reused — prevents stale metadata from persisting.
+    ///
+    /// Also stores complete upgrade approval metadata in persistent
+    /// storage for off-chain verification, including the target hash,
+    /// version, approver, creation ledger, and expiry ledger.
     pub fn approve_upgrade(env: Env, wasm_hash: BytesN<32>, new_version: u32) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
@@ -233,18 +245,16 @@ impl ProtocolConfigContract {
         let current_ledger = env.ledger().sequence();
 
         // Saturating arithmetic prevents overflow on boundary inputs
-        let earliest_execution = current_ledger
-            .saturating_add(UPGRADE_TIMELOCK_LEDGERS);
-        let expires_at = current_ledger
-            .saturating_add(UPGRADE_APPROVAL_EXPIRY_LEDGERS);
+        let earliest_execution = current_ledger.saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let expires_at = current_ledger.saturating_add(UPGRADE_APPROVAL_EXPIRY_LEDGERS);
 
         // Validate timing invariants
         if earliest_execution > expires_at {
             return Err(ContractError::InvalidTimingConfig);
         }
 
-        // Store approval — ALWAYS creates fresh timing metadata
-        // Never reuses stale fields from a previous approval
+        // Store the enforcement struct in instance storage (for timelock checks at execution)
+        // ALWAYS creates fresh timing metadata — never reuses stale fields from a previous approval
         let approval = UpgradeApproval {
             wasm_hash: wasm_hash.clone(),
             created_at: current_ledger,
@@ -252,12 +262,26 @@ impl ProtocolConfigContract {
             expires_at,
             approved_by: admin.clone(),
         };
-
         env.storage()
             .instance()
             .set(&DataKey::UpgradeApproval, &approval);
-        Self::extend_instance_ttl(env.clone());
 
+        // Store rich metadata in persistent storage for off-chain verification.
+        // expiry_ledger mirrors expires_at for consistency between both records.
+        let metadata = UpgradeApprovalMetadata {
+            target_hash: wasm_hash.clone(),
+            target_version: new_version,
+            approver: admin.clone(),
+            creation_ledger: current_ledger,
+            execution_ledger: None,
+            expiry_ledger: expires_at,
+            status: ApprovalStatus::Active,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::UpgradeApprovalMetadata(wasm_hash.clone()), &metadata);
+
+        Self::extend_instance_ttl(env.clone());
         UpgradeAllowlisted {
             wasm_hash,
             new_contract_version: new_version,
@@ -269,16 +293,33 @@ impl ProtocolConfigContract {
 
     /// Admin-only: remove a previously allowlisted WASM hash without applying
     /// it.  Safe to call even if the hash was never allowlisted.
+    ///
+    /// If a metadata record exists for this hash, its status is set to Revoked
+    /// for audit purposes. The active approval slot is always cleared.
     pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
 
-        // Remove old-style allowlist entry if it exists (for backwards compatibility during transition)
+        // Mark persistent metadata as Revoked for audit trail
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(
+                &DataKey::UpgradeApprovalMetadata(wasm_hash.clone()),
+            )
+        {
+            metadata.status = ApprovalStatus::Revoked;
+            env.storage()
+                .persistent()
+                .set(&DataKey::UpgradeApprovalMetadata(wasm_hash.clone()), &metadata);
+        }
+
+        // Remove legacy allowlist entry (backwards compatibility)
         env.storage()
             .instance()
             .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
 
-        // Remove the approval
+        // Clear the active approval slot
         env.storage()
             .instance()
             .remove(&DataKey::UpgradeApproval);
@@ -294,13 +335,64 @@ impl ProtocolConfigContract {
     /// Returns true when `wasm_hash` is on the allowlist.
     pub fn is_upgrade_allowed(env: Env, wasm_hash: BytesN<32>) -> bool {
         // Check new-style approval
-        if let Some(approval) = env.storage().instance().get::<_, UpgradeApproval>(&DataKey::UpgradeApproval) {
+        if let Some(approval) = env
+            .storage()
+            .instance()
+            .get::<_, UpgradeApproval>(&DataKey::UpgradeApproval)
+        {
             return approval.wasm_hash == wasm_hash;
         }
         // Fall back to old-style allowlist for backwards compatibility
         env.storage()
             .instance()
             .has(&DataKey::AllowedWasm(wasm_hash))
+    }
+
+    /// Returns upgrade approval metadata for off-chain verification.
+    ///
+    /// # Read-only guarantee
+    /// This function NEVER mutates storage, TTL, or governance state.
+    /// It reads from persistent storage without touching instance storage
+    /// or extending any TTL — callers can query freely without side effects.
+    ///
+    /// # Unknown vs Revoked
+    /// - `ApprovalQuery::NotFound`: no record exists for this hash
+    /// - `ApprovalQuery::Revoked(metadata)`: record exists, was explicitly revoked
+    ///   The distinction matters for auditing: NotFound may mean the approval
+    ///   was never created or was garbage-collected after expiry.
+    ///
+    /// # Arguments
+    /// * `target_hash` - The 32-byte WASM hash to look up
+    pub fn get_upgrade_approval_metadata(env: Env, target_hash: BytesN<32>) -> ApprovalQuery {
+        use earnproof_shared::ApprovalQuery::*;
+        use earnproof_shared::ApprovalStatus::*;
+
+        // Read from persistent storage — never instance (no TTL side effects)
+        let metadata = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(
+                &DataKey::UpgradeApprovalMetadata(target_hash.clone()),
+            );
+
+        match metadata {
+            None => NotFound,
+            Some(m) if m.status == Revoked => Revoked(m),
+            Some(m) => {
+                // Check for implicit expiry (window passed without execution)
+                let current_ledger = env.ledger().sequence();
+                if current_ledger > m.expiry_ledger && m.status == Active {
+                    // Return as expired — but DO NOT write this to storage
+                    // (read-only: caller sees expired status without mutating state)
+                    Found(UpgradeApprovalMetadata {
+                        status: Expired,
+                        ..m
+                    })
+                } else {
+                    Found(m)
+                }
+            }
+        }
     }
 
     /// Admin-only: apply an in-place WASM upgrade.
@@ -337,10 +429,8 @@ impl ProtocolConfigContract {
             return Err(ContractError::UpgradeTimelockNotElapsed);
         }
 
-        // Check expiry: too late
+        // Check expiry: too late — leave state unchanged, caller must re-approve
         if current_ledger >= approval.expires_at {
-            // Approval expired — leave state unchanged
-            // Caller must re-approve
             return Err(ContractError::UpgradeApprovalExpired);
         }
 
@@ -360,7 +450,7 @@ impl ProtocolConfigContract {
         env.deployer()
             .update_current_contract_wasm(wasm_hash.clone());
 
-        // Remove approval after successful execution (before version bump)
+        // Consume the active approval slot before version bump (prevents re-entrancy replay)
         env.storage()
             .instance()
             .remove(&DataKey::UpgradeApproval);
@@ -369,6 +459,22 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &new_version);
+
+        // Update persistent audit record to Executed
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(
+                &DataKey::UpgradeApprovalMetadata(wasm_hash.clone()),
+            )
+        {
+            metadata.execution_ledger = Some(current_ledger);
+            metadata.status = ApprovalStatus::Executed;
+            env.storage()
+                .persistent()
+                .set(&DataKey::UpgradeApprovalMetadata(wasm_hash.clone()), &metadata);
+        }
+
         Self::extend_instance_ttl(env.clone());
 
         ContractUpgraded {
@@ -561,26 +667,29 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn approve_upgrade_rejects_downgrade_version() {
         let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
         // current version is 1; attempting to allowlist version 1 is rejected
-        client.approve_upgrade(&bytes(&env, 1), &1);
+        let result = client.try_approve_upgrade(&bytes(&env, 1), &1);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn approve_upgrade_rejects_lower_version() {
         let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
         // current version is 1; version 0 must be rejected
-        client.approve_upgrade(&bytes(&env, 1), &0);
+        let result = client.try_approve_upgrade(&bytes(&env, 1), &0);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
-    #[should_panic(expected = "wasm hash not on allowlist")]
     fn upgrade_contract_rejects_non_allowlisted_hash() {
         let (env, client, _admin) = setup();
-        client.upgrade_contract(&bytes(&env, 0xff));
+        use earnproof_shared::ContractError;
+        let result = client.try_upgrade_contract(&bytes(&env, 0xff), &2);
+        assert_eq!(result, Err(Ok(ContractError::NoUpgradeApproval)));
     }
 
     /// Verifies that `upgrade_contract` enforces admin authorization before
@@ -601,7 +710,7 @@ mod test {
         env.set_auths(&[]);
 
         // Attempt upgrade without auth — must panic.
-        client.upgrade_contract(&hash);
+        client.upgrade_contract(&hash, &2);
     }
 
     /// Verifies that the allowlist entry is consumed after a successful upgrade
@@ -619,7 +728,10 @@ mod test {
         client.approve_upgrade(&hash, &2);
         assert!(client.is_upgrade_allowed(&hash));
 
-        client.upgrade_contract(&hash);
+        // Advance past timelock before executing
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash, &2);
 
         // Version must have advanced.
         assert_eq!(client.get_contract_version(), 2);
@@ -631,15 +743,19 @@ mod test {
     /// time (allowlist entry was consumed, and the version guard would also
     /// block it even if re-approved with the same version).
     #[test]
-    #[should_panic(expected = "wasm hash not on allowlist")]
     fn upgrade_contract_hash_cannot_be_replayed() {
         let (env, client, _admin) = setup();
         let hash = bytes(&env, 0x42);
+        use earnproof_shared::ContractError;
 
         client.approve_upgrade(&hash, &2);
-        client.upgrade_contract(&hash);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash, &2);
+
         // Second application must fail — entry was consumed.
-        client.upgrade_contract(&hash);
+        let result = client.try_upgrade_contract(&hash, &2);
+        assert_eq!(result, Err(Ok(ContractError::NoUpgradeApproval)));
     }
 
     /// State written before an upgrade is still readable after.
@@ -656,7 +772,9 @@ mod test {
         // Perform upgrade.
         let hash = bytes(&env, 0x77);
         client.approve_upgrade(&hash, &2);
-        client.upgrade_contract(&hash);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash, &2);
 
         // State must be intact after upgrade.
         assert!(client.is_paused());
@@ -667,19 +785,22 @@ mod test {
     /// An upgrade approved with version N cannot be reused to downgrade from
     /// a later version M > N even if the hash is re-added to the allowlist.
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn cannot_re_approve_old_version_after_upgrade() {
         let (env, client, _admin) = setup();
         let hash_v2 = bytes(&env, 0x01);
         let old_hash = bytes(&env, 0x02);
+        use earnproof_shared::ContractError;
 
         // Upgrade to version 2.
         client.approve_upgrade(&hash_v2, &2);
-        client.upgrade_contract(&hash_v2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash_v2, &2);
         assert_eq!(client.get_contract_version(), 2);
 
         // Attempt to allowlist a hash that would install version 1 — rejected.
-        client.approve_upgrade(&old_hash, &1);
+        let result = client.try_approve_upgrade(&old_hash, &1);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     /// `approve_upgrade` by a non-admin must be rejected.
@@ -716,23 +837,19 @@ mod test {
     // ── numeric boundary tests ────────────────────────────────────────────────
 
     /// Table-driven tests for schema version boundaries.
-    /// Schema versions must be >= MIN_SCHEMA_VERSION (1).
     #[test]
     fn schema_version_boundary_values() {
         let (_env, client, _admin) = setup();
 
-        // Valid: minimum allowed schema version
         client.approve_schema_version(&1);
         assert!(client.is_schema_version_approved(&1));
 
-        // Valid: typical schema versions
         client.approve_schema_version(&2);
         assert!(client.is_schema_version_approved(&2));
 
         client.approve_schema_version(&100);
         assert!(client.is_schema_version_approved(&100));
 
-        // Valid: u32 maximum
         client.approve_schema_version(&u32::MAX);
         assert!(client.is_schema_version_approved(&u32::MAX));
     }
@@ -740,7 +857,6 @@ mod test {
     #[test]
     fn schema_version_zero_rejected() {
         let (_env, client, _admin) = setup();
-        // Version 0 must be rejected with a typed error.
         use earnproof_shared::ContractError;
         let result = client.try_approve_schema_version(&0);
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
@@ -749,13 +865,11 @@ mod test {
     #[test]
     fn is_schema_version_approved_with_zero_returns_false() {
         let (_env, client, _admin) = setup();
-        // Querying version 0 should return false without panic
         let result = client.is_schema_version_approved(&0);
         assert!(!result);
     }
 
     /// Table-driven tests for contract version boundaries.
-    /// Contract versions must be > current version (monotonically increasing).
     #[test]
     fn contract_version_upgrade_boundaries() {
         let (env, client, _admin) = setup();
@@ -763,45 +877,50 @@ mod test {
 
         // Valid: immediate next version
         client.approve_upgrade(&bytes(&env, 1), &2);
-        client.upgrade_contract(&bytes(&env, 1));
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&bytes(&env, 1), &2);
         assert_eq!(client.get_contract_version(), 2);
 
         // Valid: skip versions (not required to be sequential)
         client.approve_upgrade(&bytes(&env, 2), &1000);
-        client.upgrade_contract(&bytes(&env, 2));
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&bytes(&env, 2), &1000);
         assert_eq!(client.get_contract_version(), 1000);
 
         // Valid: very large version number
         client.approve_upgrade(&bytes(&env, 3), &u32::MAX);
-        client.upgrade_contract(&bytes(&env, 3));
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&bytes(&env, 3), &u32::MAX);
         assert_eq!(client.get_contract_version(), u32::MAX);
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn contract_version_equal_current_rejected() {
         let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
         // Current version is 1; attempting to set it to 1 again is rejected
-        client.approve_upgrade(&bytes(&env, 1), &1);
+        let result = client.try_approve_upgrade(&bytes(&env, 1), &1);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn contract_version_below_current_rejected() {
         let (env, client, _admin) = setup();
+        use earnproof_shared::ContractError;
         // Current version is 1; attempting to set it to 0 is rejected
-        client.approve_upgrade(&bytes(&env, 1), &0);
+        let result = client.try_approve_upgrade(&bytes(&env, 1), &0);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     /// Table-driven tests for config version bumping.
-    /// Config version increments on every configuration change.
-    /// This tests the checked_add protection against overflow.
     #[test]
     fn config_version_increments_on_mutations() {
         let (_env, client, _admin) = setup();
         assert_eq!(client.get_config_version(), 1);
 
-        // Each mutation bumps config version
         client.pause();
         assert_eq!(client.get_config_version(), 2);
 
@@ -815,31 +934,17 @@ mod test {
         assert_eq!(client.get_config_version(), 5);
     }
 
-    /// Verify that config version correctly handles large values
-    /// approaching u32::MAX (bumping is protected by checked_add).
     #[test]
     fn config_version_safe_near_u32_max() {
         let (_env, client, _admin) = setup();
 
-        // Manually set config version to a value near max by simulating
-        // many mutations. We'll do a smaller simulation here.
-        // In real operation, reaching u32::MAX would require ~4 billion mutations,
-        // which is impractical in a test, but we verify the protection exists.
-
-        // Get current config version (should be 1 after setup)
         let mut v = client.get_config_version();
         assert_eq!(v, 1);
 
-        // Perform several mutations and verify each increments exactly once,
-        // starting from the value established by the previous mutation.
         for _ in 0..10 {
             client.pause();
             let after_pause = client.get_config_version();
-            assert_eq!(
-                after_pause,
-                v + 1,
-                "pause must bump config version exactly once"
-            );
+            assert_eq!(after_pause, v + 1, "pause must bump config version exactly once");
 
             client.unpause();
             let after_unpause = client.get_config_version();
@@ -852,8 +957,6 @@ mod test {
         }
     }
 
-    /// Test storage and event invariants: failed boundary cases
-    /// must not modify state or emit events.
     #[test]
     fn failed_schema_version_zero_leaves_state_unchanged() {
         let (_env, client, _admin) = setup();
@@ -861,21 +964,13 @@ mod test {
         let config_before = client.get_config_version();
         let approved_before = client.is_schema_version_approved(&999);
 
-        // Attempt to approve version 0 — should panic
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.approve_schema_version(&0);
         }));
 
-        // Must have panicked
         assert!(result.is_err());
-
-        // State must be unchanged
         assert_eq!(client.get_config_version(), config_before);
-        assert_eq!(
-            client.is_schema_version_approved(&999),
-            approved_before,
-            "schema version approval state must not change on failed validation"
-        );
+        assert_eq!(client.is_schema_version_approved(&999), approved_before);
     }
 
     #[test]
@@ -886,46 +981,18 @@ mod test {
         let config_version_before = client.get_config_version();
         let hash = bytes(&env, 0x99);
 
-        // Attempt to allowlist a downgrade (current version is 1, trying version 0)
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.approve_upgrade(&hash, &0);
         }));
 
-        // Must have panicked
         assert!(result.is_err());
-
-        // State must be unchanged: contract version not modified
-        assert_eq!(
-            client.get_contract_version(),
-            contract_version_before,
-            "contract version must not change on failed upgrade approval"
-        );
-
-        // Config version must not be bumped on failed validation
-        assert_eq!(
-            client.get_config_version(),
-            config_version_before,
-            "config version must not change when upgrade approval fails"
-        );
-
-        // Hash must not be on allowlist
-        assert!(
-            !client.is_upgrade_allowed(&hash),
-            "failed upgrade approval must not add hash to allowlist"
-        );
+        assert_eq!(client.get_contract_version(), contract_version_before);
+        assert_eq!(client.get_config_version(), config_version_before);
+        assert!(!client.is_upgrade_allowed(&hash));
     }
 
-    // ── adversarial initialization tests ───────────────────────────────────────
+    // ── adversarial initialization tests ──────────────────────────────────────
 
-    /// Verify that first initialization writes exactly the documented state
-    /// with no partial writes or missing fields.
-    ///
-    /// Required behavior: First call to `initialize` results in:
-    /// - Admin address set and readable
-    /// - Paused = false
-    /// - ConfigVersion = 1
-    /// - ContractVersion = 1
-    /// - Initialized event published
     #[test]
     fn initialization_writes_exactly_documented_state() {
         let env = Env::default();
@@ -934,61 +1001,22 @@ mod test {
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // Before initialization: storage should be empty
-        // (querying uninitialized values returns defaults or panics)
-
-        // Perform initialization
         client.initialize(&admin);
 
-        // Verify exact state written
-        assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
-            "protocol must not be paused after initialization"
-        );
-        assert_eq!(
-            client.get_config_version(),
-            1,
-            "config version must be exactly 1 after initialization"
-        );
-        assert_eq!(
-            client.get_contract_version(),
-            1,
-            "contract version must be exactly 1 after initialization"
-        );
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.is_paused(), false);
+        assert_eq!(client.get_config_version(), 1);
+        assert_eq!(client.get_contract_version(), 1);
 
-        // Verify Initialized event was published
-        // (Event verification requires inspecting env's event log)
         env.as_contract(&contract_id, || {
-            // Storage keys must all be set (verifiable via has() calls)
             let instance = env.storage().instance();
-            assert!(
-                instance.has(&DataKey::Admin),
-                "Admin key must exist in instance storage"
-            );
-            assert!(
-                instance.has(&DataKey::Paused),
-                "Paused key must exist in instance storage"
-            );
-            assert!(
-                instance.has(&DataKey::ConfigVersion),
-                "ConfigVersion key must exist in instance storage"
-            );
-            assert!(
-                instance.has(&DataKey::ContractVersion),
-                "ContractVersion key must exist in instance storage"
-            );
+            assert!(instance.has(&DataKey::Admin));
+            assert!(instance.has(&DataKey::Paused));
+            assert!(instance.has(&DataKey::ConfigVersion));
+            assert!(instance.has(&DataKey::ContractVersion));
         });
     }
 
-    /// Verify that repeated initialization by any address fails without
-    /// altering state or emitting events.
-    ///
-    /// Required behavior for re-initialization guard:
-    /// - Second call to `initialize` with any admin (same or different) panics
-    /// - Storage is byte-for-byte unchanged
-    /// - No additional events are emitted
     #[test]
     fn reinitialization_by_same_admin_fails_atomically() {
         let env = Env::default();
@@ -997,48 +1025,22 @@ mod test {
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // First initialization succeeds
         client.initialize(&admin);
         let config_version_after_first = client.get_config_version();
         let contract_version_after_first = client.get_contract_version();
         let paused_after_first = client.is_paused();
 
-        // Attempt second initialization with same admin
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.initialize(&admin);
         }));
 
-        // Must have panicked with "already initialized"
         assert!(result.is_err(), "re-initialization must panic");
-
-        // Verify state is byte-for-byte identical
-        assert_eq!(
-            client.get_admin(),
-            admin,
-            "admin must not change after failed re-initialization"
-        );
-        assert_eq!(
-            client.get_config_version(),
-            config_version_after_first,
-            "config version must not change after failed re-initialization"
-        );
-        assert_eq!(
-            client.get_contract_version(),
-            contract_version_after_first,
-            "contract version must not change after failed re-initialization"
-        );
-        assert_eq!(
-            client.is_paused(),
-            paused_after_first,
-            "paused state must not change after failed re-initialization"
-        );
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.get_config_version(), config_version_after_first);
+        assert_eq!(client.get_contract_version(), contract_version_after_first);
+        assert_eq!(client.is_paused(), paused_after_first);
     }
 
-    /// Verify that re-initialization by a different address also fails
-    /// without state or event changes.
-    ///
-    /// This tests that the re-initialization guard does not discriminate
-    /// based on caller identity — it prevents any re-initialization attempt.
     #[test]
     fn reinitialization_by_different_admin_fails_atomically() {
         let env = Env::default();
@@ -1048,40 +1050,19 @@ mod test {
         let admin = Address::from_str(&env, ADMIN);
         let other = Address::from_str(&env, OTHER);
 
-        // First initialization with original admin
         client.initialize(&admin);
         let stored_admin = client.get_admin();
         let config_version_after_first = client.get_config_version();
 
-        // Attempt re-initialization with different admin
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.initialize(&other);
         }));
 
-        // Must have panicked
-        assert!(
-            result.is_err(),
-            "re-initialization by different admin must panic"
-        );
-
-        // Verify state is unchanged: original admin must still be stored
-        assert_eq!(
-            client.get_admin(),
-            stored_admin,
-            "admin must not change when different address attempts re-initialization"
-        );
-        assert_eq!(
-            client.get_config_version(),
-            config_version_after_first,
-            "config version must not change after failed re-initialization by different admin"
-        );
+        assert!(result.is_err());
+        assert_eq!(client.get_admin(), stored_admin);
+        assert_eq!(client.get_config_version(), config_version_after_first);
     }
 
-    /// Verify that an address that looks like it might have elevated permissions
-    /// cannot bypass the re-initialization guard.
-    ///
-    /// Tests with an address string that is numeric (e.g., address index)
-    /// or otherwise potentially special to the test framework.
     #[test]
     fn reinitialization_by_arbitrary_special_address_fails() {
         let env = Env::default();
@@ -1090,35 +1071,18 @@ mod test {
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // First initialization with standard admin
         client.initialize(&admin);
         let stored_admin = client.get_admin();
-
-        // Attempt re-initialization with an arbitrary address that might look
-        // special (e.g., derived from a standard test key)
         let arbitrary = Address::from_str(&env, OTHER);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.initialize(&arbitrary);
         }));
 
-        // Must have panicked
-        assert!(
-            result.is_err(),
-            "re-initialization by arbitrary address must panic"
-        );
-
-        // Original admin must be preserved
-        assert_eq!(
-            client.get_admin(),
-            stored_admin,
-            "admin must not change when arbitrary address attempts re-initialization"
-        );
+        assert!(result.is_err());
+        assert_eq!(client.get_admin(), stored_admin);
     }
 
-    /// Verify that the re-initialization guard is truly the only barrier —
-    /// the panic message must indicate "already initialized", not a different
-    /// validation error.
     #[test]
     fn reinitialization_panic_message_indicates_guard() {
         let env = Env::default();
@@ -1127,21 +1091,15 @@ mod test {
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // First initialization succeeds
         client.initialize(&admin);
 
-        // Attempt re-initialization and verify panic message
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.initialize(&admin);
         }));
 
-        assert!(result.is_err(), "re-initialization must panic");
-        // The panic message is internal to the contract; we verify the failure occurred
+        assert!(result.is_err());
     }
 
-    /// Verify that the re-initialization guard takes effect immediately after
-    /// the first initialize() call completes — no transient window during which
-    /// a second initialize could partially succeed.
     #[test]
     fn reinitialization_guard_active_immediately() {
         let env = Env::default();
@@ -1150,22 +1108,14 @@ mod test {
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // First initialization
         client.initialize(&admin);
 
-        // Subsequent initializations (multiple attempts) must all fail
         for attempt in 1..=3 {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 client.initialize(&admin);
             }));
 
-            assert!(
-                result.is_err(),
-                "re-initialization attempt {} must fail",
-                attempt
-            );
-
-            // Admin must remain unchanged after each failed attempt
+            assert!(result.is_err(), "re-initialization attempt {} must fail", attempt);
             assert_eq!(
                 client.get_admin(),
                 admin,
@@ -1175,89 +1125,337 @@ mod test {
         }
     }
 
-    /// Verify that the documented initialization state is maintained even
-    /// across function calls and state mutations after initialization.
-    ///
-    /// Tests that the initial state (versions, paused flag) is stable
-    /// and correct before any subsequent mutations.
     #[test]
     fn initialization_state_stable_before_mutations() {
         let (_env, client, admin) = setup();
 
-        // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
         assert_eq!(client.is_paused(), false);
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
-        // Perform a mutation (pause)
         client.pause();
 
-        // Admin must remain unchanged
-        assert_eq!(
-            client.get_admin(),
-            admin,
-            "admin must not change across mutations"
-        );
-
-        // But config version should have bumped
-        assert_eq!(
-            client.get_config_version(),
-            2,
-            "config version must increment on mutation"
-        );
-
-        // Contract version must remain at 1 (only changes on upgrade)
-        assert_eq!(
-            client.get_contract_version(),
-            1,
-            "contract version must not change on config mutation"
-        );
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.get_config_version(), 2);
+        assert_eq!(client.get_contract_version(), 1);
     }
 
-    /// Summary test: protocol-config initialization spec verification.
-    ///
-    /// This test serves as executable documentation of what the test matrix
-    /// expects from protocol-config initialization:
-    /// - Standalone contract (no dependency addresses)
-    /// - Has re-initialization guard
-    /// - Emits Initialized event
-    /// - Sets: admin, paused=false, config_version=1, contract_version=1
     #[test]
     fn protocol_config_initialization_spec_summary() {
-        // CONTRACT SPEC: protocol-config
-        // - Name: "protocol-config"
-        // - Has re-initialization guard: YES (panics "already initialized")
-        // - Emits initialization event: YES (Initialized { admin })
-        // - Takes dependency addresses: NO
-        // - Dependencies: []
-        // - First init writes:
-        //   - Admin: passed address (requires auth)
-        //   - Paused: false
-        //   - ConfigVersion: 1
-        //   - ContractVersion: 1
-        // - Re-init guard: DataKey::Admin presence check; panics if set
-        // - Re-init allowed by different admin: NO (guard blocks all)
-        // - Invalid config cases: None (no dependencies to validate)
-
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ProtocolConfigContract, ());
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
 
-        // Verify the spec
         client.initialize(&admin);
         assert_eq!(client.get_admin(), admin);
         assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
-        // Re-initialization must fail
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    // ── approval metadata tests ────────────────────────────────────────────────
+
+    #[test]
+    fn get_metadata_returns_found_for_active_approval() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, admin) = setup();
+        let hash = bytes(&env, 0xab);
+
+        client.approve_upgrade(&hash, &2);
+
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.target_hash, hash);
+                assert_eq!(metadata.target_version, 2);
+                assert_eq!(metadata.approver, admin);
+                assert_eq!(metadata.execution_ledger, None);
+                assert_eq!(metadata.status, ApprovalStatus::Active);
+                assert!(metadata.creation_ledger > 0);
+                assert!(metadata.expiry_ledger > metadata.creation_ledger);
+            }
+            _ => panic!("expected ApprovalQuery::Found"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_executed_after_upgrade_executed() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0xcd);
+
+        client.approve_upgrade(&hash, &2);
+        let creation_ledger = env.ledger().sequence();
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash, &2);
+        let execution_ledger = env.ledger().sequence();
+
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.status, ApprovalStatus::Executed);
+                assert_eq!(metadata.execution_ledger, Some(execution_ledger));
+                assert!(metadata.execution_ledger.unwrap() >= creation_ledger);
+            }
+            _ => panic!("expected ApprovalQuery::Found with Executed status"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_not_found_for_unknown_hash() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0xff);
+
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::NotFound => {}
+            _ => panic!("expected ApprovalQuery::NotFound"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_returns_revoked_for_explicitly_revoked_approval() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0xee);
+
+        client.approve_upgrade(&hash, &2);
+        client.revoke_upgrade(&hash);
+
+        let result = client.get_upgrade_approval_metadata(&hash);
+
+        match result {
+            ApprovalQuery::Revoked(metadata) => {
+                assert_eq!(metadata.status, ApprovalStatus::Revoked);
+            }
+            _ => panic!("expected ApprovalQuery::Revoked"),
+        }
+    }
+
+    #[test]
+    fn not_found_is_distinct_from_revoked() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let unknown_hash = bytes(&env, 0x11);
+        let revoked_hash = bytes(&env, 0x22);
+
+        client.approve_upgrade(&revoked_hash, &2);
+        client.revoke_upgrade(&revoked_hash);
+
+        let unknown_result = client.get_upgrade_approval_metadata(&unknown_hash);
+        assert!(matches!(unknown_result, ApprovalQuery::NotFound));
+
+        let revoked_result = client.get_upgrade_approval_metadata(&revoked_hash);
+        assert!(matches!(revoked_result, ApprovalQuery::Revoked(_)));
+    }
+
+    #[test]
+    fn get_metadata_shows_expired_after_expiry_ledger_passes() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x33);
+
+        client.approve_upgrade(&hash, &2);
+
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        env.ledger().with_sequence(expiry_ledger + 1, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Expired);
+                }
+                _ => panic!("expected ApprovalQuery::Found with Expired status"),
+            }
+        });
+    }
+
+    #[test]
+    fn get_metadata_shows_active_at_exactly_expiry_ledger() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x44);
+
+        client.approve_upgrade(&hash, &2);
+
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        env.ledger().with_sequence(expiry_ledger, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Active);
+                }
+                _ => panic!("expected ApprovalQuery::Found with Active status at boundary"),
+            }
+        });
+    }
+
+    #[test]
+    fn get_metadata_does_not_mutate_storage() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x55);
+
+        client.approve_upgrade(&hash, &2);
+
+        let _result1 = client.get_upgrade_approval_metadata(&hash);
+        let _result2 = client.get_upgrade_approval_metadata(&hash);
+        let _result3 = client.get_upgrade_approval_metadata(&hash);
+
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.execution_ledger, None);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_expired_status_not_written_to_storage() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x66);
+
+        client.approve_upgrade(&hash, &2);
+
+        let metadata_before = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m,
+            _ => panic!("expected Found"),
+        };
+        let expiry_ledger = metadata_before.expiry_ledger;
+
+        env.ledger().with_sequence(expiry_ledger + 1, || {
+            let result = client.get_upgrade_approval_metadata(&hash);
+            match result {
+                ApprovalQuery::Found(metadata) => {
+                    assert_eq!(metadata.status, ApprovalStatus::Expired);
+                }
+                _ => panic!("expected Found with Expired"),
+            }
+        });
+
+        // Back within the valid window — stored status must still be Active
+        let stored_result = client.get_upgrade_approval_metadata(&hash);
+        match stored_result {
+            ApprovalQuery::Found(metadata) => {
+                if env.ledger().sequence() <= metadata.expiry_ledger {
+                    assert_eq!(metadata.status, ApprovalStatus::Active);
+                }
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn approval_metadata_stores_all_required_fields() {
+        use earnproof_shared::{ApprovalQuery, ApprovalStatus};
+
+        let (env, client, admin) = setup();
+        let hash = bytes(&env, 0x77);
+        let version = 5_u32;
+
+        client.approve_upgrade(&hash, &version);
+
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                assert_eq!(metadata.target_hash, hash);
+                assert_eq!(metadata.target_version, version);
+                assert_eq!(metadata.approver, admin);
+                assert!(metadata.creation_ledger > 0);
+                assert_eq!(metadata.execution_ledger, None);
+                assert!(metadata.expiry_ledger > metadata.creation_ledger);
+                assert_eq!(metadata.status, ApprovalStatus::Active);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn execution_ledger_set_when_upgrade_executed() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash = bytes(&env, 0x88);
+
+        client.approve_upgrade(&hash, &2);
+
+        let before_execution = match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(m) => m.execution_ledger,
+            _ => panic!("expected Found"),
+        };
+        assert_eq!(before_execution, None);
+
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
+        client.upgrade_contract(&hash, &2);
+
+        match client.get_upgrade_approval_metadata(&hash) {
+            ApprovalQuery::Found(metadata) => {
+                assert!(metadata.execution_ledger.is_some());
+                assert!(metadata.execution_ledger.unwrap() > 0);
+            }
+            _ => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn multiple_approvals_independent() {
+        use earnproof_shared::ApprovalQuery;
+
+        let (env, client, _admin) = setup();
+        let hash1 = bytes(&env, 0x99);
+        let hash2 = bytes(&env, 0xaa);
+
+        // Create two approvals (second replaces first in the active slot,
+        // but both metadata records remain in persistent storage)
+        client.approve_upgrade(&hash1, &2);
+        client.approve_upgrade(&hash2, &3);
+
+        match client.get_upgrade_approval_metadata(&hash1) {
+            ApprovalQuery::Found(m1) => {
+                assert_eq!(m1.target_version, 2);
+
+                match client.get_upgrade_approval_metadata(&hash2) {
+                    ApprovalQuery::Found(m2) => {
+                        assert_eq!(m2.target_version, 3);
+                        assert_ne!(m1.target_hash, m2.target_hash);
+                    }
+                    _ => panic!("expected Found for hash2"),
+                }
+            }
+            _ => panic!("expected Found for hash1"),
+        }
     }
 }
 
@@ -1267,8 +1465,7 @@ mod upgrade_timelock_tests {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ContractError, UpgradeApproval, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
-        UPGRADE_TIMELOCK_LEDGERS,
+        ContractError, UpgradeApproval, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
     };
     use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env};
 
@@ -1352,7 +1549,6 @@ mod upgrade_timelock_tests {
     fn test_re_approval_resets_all_timing_metadata() {
         let (env, client, _) = setup();
 
-        // First approval
         client.approve_upgrade(&make_wasm_hash(&env), &2).unwrap();
 
         env.as_contract(&client.address, || {
@@ -1360,15 +1556,13 @@ mod upgrade_timelock_tests {
                 .storage()
                 .instance()
                 .get(&DataKey::UpgradeApproval);
-            let first_created = approval.unwrap().created_at;
-            let first_earliest = approval.unwrap().earliest_execution;
+            let first_created = approval.as_ref().unwrap().created_at;
+            let first_earliest = approval.as_ref().unwrap().earliest_execution;
             let first_expires = approval.unwrap().expires_at;
 
-            // Advance ledger
             env.ledger()
                 .set_sequence_number(env.ledger().sequence() + 1000);
 
-            // Re-approve
             client.approve_upgrade(&make_wasm_hash(&env), &2).unwrap();
 
             let approval2: Option<UpgradeApproval> = env
@@ -1377,18 +1571,9 @@ mod upgrade_timelock_tests {
                 .get(&DataKey::UpgradeApproval);
             let approval2 = approval2.unwrap();
 
-            assert_ne!(
-                approval2.created_at, first_created,
-                "Re-approval must reset created_at (no stale reuse)"
-            );
-            assert_ne!(
-                approval2.earliest_execution, first_earliest,
-                "Re-approval must reset earliest_execution"
-            );
-            assert_ne!(
-                approval2.expires_at, first_expires,
-                "Re-approval must reset expires_at"
-            );
+            assert_ne!(approval2.created_at, first_created, "Re-approval must reset created_at");
+            assert_ne!(approval2.earliest_execution, first_earliest, "Re-approval must reset earliest_execution");
+            assert_ne!(approval2.expires_at, first_expires, "Re-approval must reset expires_at");
         });
     }
 
@@ -1399,10 +1584,8 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // Try immediately (before timelock)
         let result = client.try_upgrade_contract(&hash, &2);
 
         assert_eq!(
@@ -1417,15 +1600,12 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // Advance to exactly earliest_execution
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
 
         let result = client.try_upgrade_contract(&hash, &2);
-
         assert!(result.is_ok(), "Execute at earliest_execution must succeed");
     }
 
@@ -1434,10 +1614,8 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // One ledger before timelock
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS - 1);
 
@@ -1451,15 +1629,12 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // Advance past expiry
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS + 1);
 
         let result = client.try_upgrade_contract(&hash, &2);
-
         assert_eq!(
             result,
             Err(Ok(ContractError::UpgradeApprovalExpired)),
@@ -1472,15 +1647,12 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // Advance to exactly expires_at
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS);
 
         let result = client.try_upgrade_contract(&hash, &2);
-
         assert_eq!(
             result,
             Err(Ok(ContractError::UpgradeApprovalExpired)),
@@ -1493,7 +1665,6 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
         // Attempt execute before timelock (fails)
@@ -1516,7 +1687,6 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         client.approve_upgrade(&make_wasm_hash(&env), &2).unwrap();
-
         client.revoke_upgrade_approval().unwrap();
 
         env.as_contract(&client.address, || {
@@ -1533,8 +1703,6 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         client.approve_upgrade(&make_wasm_hash(&env), &2).unwrap();
-
-        // Revoke immediately (before timelock)
         assert!(client.revoke_upgrade_approval().is_ok());
     }
 
@@ -1547,7 +1715,6 @@ mod upgrade_timelock_tests {
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS + 1);
 
-        // Revoke should succeed even on expired approval (cleanup)
         assert!(client.revoke_upgrade_approval().is_ok());
     }
 
@@ -1565,23 +1732,16 @@ mod upgrade_timelock_tests {
     fn test_approve_at_max_ledger_does_not_overflow() {
         let (env, client, _) = setup();
 
-        // Set ledger near u32::MAX
-        env.ledger()
-            .set_sequence_number(u32::MAX - 1000);
+        env.ledger().set_sequence_number(u32::MAX - 1000);
 
-        // Must not panic — saturating_add used
         let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
-
         assert!(result.is_ok(), "Approve near u32::MAX must not overflow");
     }
 
     #[test]
     fn test_saturating_add_caps_at_u32_max() {
-        // Unit test for the arithmetic
         let near_max: u32 = u32::MAX - 100;
-
         let result = near_max.saturating_add(UPGRADE_TIMELOCK_LEDGERS);
-
         assert_eq!(result, u32::MAX, "saturating_add must cap at u32::MAX");
     }
 
@@ -1592,19 +1752,14 @@ mod upgrade_timelock_tests {
         let (env, client, _) = setup();
 
         let hash = make_wasm_hash(&env);
-
         client.approve_upgrade(&hash, &2).unwrap();
 
-        // Advance past timelock
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
 
-        // Execute (consumes approval)
         client.upgrade_contract(&hash, &2).unwrap();
 
-        // Replay attempt — must fail (no approval)
         let result = client.try_upgrade_contract(&hash, &2);
-
         assert_eq!(
             result,
             Err(Ok(ContractError::NoUpgradeApproval)),
@@ -1625,7 +1780,6 @@ mod upgrade_timelock_tests {
             .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
 
         let result = client.try_upgrade_contract(&different_hash, &2);
-
         assert_eq!(result, Err(Ok(ContractError::WasmHashMismatch)));
     }
 
@@ -1634,7 +1788,6 @@ mod upgrade_timelock_tests {
     #[test]
     fn test_approve_requires_admin_auth() {
         let env = Env::default();
-        // Do NOT mock all auths — test auth enforcement
         let contract_id = env.register(ProtocolConfigContract, ());
         let client = ProtocolConfigContractClient::new(&env, &contract_id);
         let admin = Address::from_str(&env, ADMIN);
@@ -1644,7 +1797,6 @@ mod upgrade_timelock_tests {
         env.set_auths(&[]);
 
         let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
-
         assert!(result.is_err(), "Non-admin must not approve");
     }
 
@@ -1661,7 +1813,6 @@ mod upgrade_timelock_tests {
         env.set_auths(&[]);
 
         let result = client.try_upgrade_contract(&make_wasm_hash(&env), &2);
-
         assert!(result.is_err(), "Non-admin must not execute");
     }
 
@@ -1678,7 +1829,6 @@ mod upgrade_timelock_tests {
         env.set_auths(&[]);
 
         let result = client.try_revoke_upgrade_approval();
-
         assert!(result.is_err(), "Non-admin must not revoke");
     }
 }
