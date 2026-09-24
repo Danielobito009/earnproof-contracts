@@ -204,6 +204,21 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
     }
 
+    pub fn get_config_digest_version() -> u32 {
+        earnproof_shared::CONFIG_DIGEST_VERSION
+    }
+
+    pub fn get_config_digest(env: Env) -> Result<BytesN<32>, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Ok(earnproof_shared::protocol_config_digest(
+            &env,
+            &admin,
+            Self::is_paused(env.clone()),
+            Self::get_config_version(env.clone()),
+            Self::get_contract_version(env.clone()),
+        ))
+    }
+
     /// Admin-only: add `wasm_hash` to the upgrade allowlist and record the
     /// `new_version` that must be installed by that WASM.
     ///
@@ -612,8 +627,7 @@ mod test {
                     &env,
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
-                ]
-                .into(),
+                ],
                 sub_invokes: &[],
             },
         }]);
@@ -849,9 +863,8 @@ mod test {
 
         // Verify exact state written
         assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
+        assert!(
+            !client.is_paused(),
             "protocol must not be paused after initialization"
         );
         assert_eq!(
@@ -1093,7 +1106,7 @@ mod test {
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
-        assert_eq!(client.is_paused(), false);
+        assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
@@ -1165,5 +1178,35 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    #[test]
+    fn configuration_digest_matches_host_helper_and_changes_with_state() {
+        let (env, client, admin) = setup();
+        assert_eq!(
+            ProtocolConfigContractClient::get_config_digest_version(&client),
+            earnproof_shared::CONFIG_DIGEST_VERSION
+        );
+
+        let initial = client.get_config_digest();
+        assert_eq!(
+            initial,
+            earnproof_shared::protocol_config_digest(&env, &admin, false, 1, 1)
+        );
+        assert_eq!(
+            initial.to_array(),
+            [
+                66, 207, 114, 36, 209, 145, 19, 67, 60, 150, 121, 245, 26, 154, 197, 30, 130, 94,
+                244, 239, 165, 103, 132, 135, 231, 95, 89, 29, 14, 149, 184, 15,
+            ]
+        );
+
+        client.pause();
+        let paused = client.get_config_digest();
+        assert_ne!(paused, initial);
+        assert_eq!(
+            paused,
+            earnproof_shared::protocol_config_digest(&env, &admin, true, 2, 1)
+        );
     }
 }

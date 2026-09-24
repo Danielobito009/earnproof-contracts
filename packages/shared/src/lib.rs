@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, Address, BytesN};
+use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol};
 
 pub mod storage_namespaces;
 
@@ -13,6 +13,58 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
+
+/// Canonical configuration digest payload version.
+pub const CONFIG_DIGEST_VERSION: u32 = 1;
+
+pub fn protocol_config_digest(
+    env: &Env,
+    admin: &Address,
+    paused: bool,
+    config_version: u32,
+    contract_version: u32,
+) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_protocol_config"),
+        admin.clone(),
+        paused,
+        config_version,
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+pub fn issuer_registry_digest(env: &Env, admin: &Address, contract_version: u32) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_issuer_registry"),
+        admin.clone(),
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+pub fn proof_registry_digest(
+    env: &Env,
+    admin: &Address,
+    issuer_registry: &Address,
+    protocol_config: &Address,
+    contract_version: u32,
+) -> BytesN<32> {
+    let payload = (
+        CONFIG_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_proof_registry"),
+        admin.clone(),
+        issuer_registry.clone(),
+        protocol_config.clone(),
+        contract_version,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
 
 // A Stellar strkey address (G...) is always exactly 56 ASCII characters.
 // soroban_sdk::String has no .chars() (unlike std::string::String, and

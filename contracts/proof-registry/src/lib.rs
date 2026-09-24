@@ -226,6 +226,23 @@ impl ProofRegistryContract {
             .unwrap_or(0)
     }
 
+    pub fn get_config_digest_version() -> u32 {
+        earnproof_shared::CONFIG_DIGEST_VERSION
+    }
+
+    pub fn get_config_digest(env: Env) -> Result<BytesN<32>, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        let issuer_registry = Self::get_issuer_registry(env.clone())?;
+        let protocol_config = Self::get_protocol_config(env.clone())?;
+        Ok(earnproof_shared::proof_registry_digest(
+            &env,
+            &admin,
+            &issuer_registry,
+            &protocol_config,
+            Self::get_contract_version(env.clone()),
+        ))
+    }
+
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
     ///
     /// `new_version` must be strictly greater than the current contract
@@ -1542,5 +1559,26 @@ mod test {
         assert!(pc_client.is_paused());
         pc_client.unpause();
         assert!(!pc_client.is_paused());
+    }
+
+    #[test]
+    fn configuration_digest_matches_host_helper_and_version_changes() {
+        let (env, client, _pc, _ir, ir_id) = setup();
+        let admin = client.get_admin();
+        let protocol_config = client.get_protocol_config();
+        let initial = client.get_config_digest();
+        assert_eq!(
+            ProofRegistryContractClient::get_config_digest_version(&client),
+            earnproof_shared::CONFIG_DIGEST_VERSION
+        );
+        assert_eq!(
+            initial,
+            earnproof_shared::proof_registry_digest(&env, &admin, &ir_id, &protocol_config, 1,)
+        );
+
+        let wasm_hash = bytes(&env, 0xd2);
+        client.approve_upgrade(&wasm_hash, &2);
+        client.upgrade_contract(&wasm_hash);
+        assert_ne!(client.get_config_digest(), initial);
     }
 }

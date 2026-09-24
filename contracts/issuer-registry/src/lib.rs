@@ -313,6 +313,19 @@ impl IssuerRegistryContract {
             .unwrap_or(0)
     }
 
+    pub fn get_config_digest_version() -> u32 {
+        earnproof_shared::CONFIG_DIGEST_VERSION
+    }
+
+    pub fn get_config_digest(env: Env) -> Result<BytesN<32>, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Ok(earnproof_shared::issuer_registry_digest(
+            &env,
+            &admin,
+            Self::get_contract_version(env.clone()),
+        ))
+    }
+
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
     ///
     /// `new_version` must be strictly greater than the current contract
@@ -1340,5 +1353,24 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    #[test]
+    fn configuration_digest_matches_host_helper_and_version_changes() {
+        let (env, client, admin) = setup();
+        let initial = client.get_config_digest();
+        assert_eq!(
+            IssuerRegistryContractClient::get_config_digest_version(&client),
+            earnproof_shared::CONFIG_DIGEST_VERSION
+        );
+        assert_eq!(
+            initial,
+            earnproof_shared::issuer_registry_digest(&env, &admin, 1)
+        );
+
+        let wasm_hash = bytes(&env, 0xd1);
+        client.approve_upgrade(&wasm_hash, &2);
+        client.upgrade_contract(&wasm_hash);
+        assert_ne!(client.get_config_digest(), initial);
     }
 }
