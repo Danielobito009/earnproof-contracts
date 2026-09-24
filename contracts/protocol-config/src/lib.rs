@@ -1,6 +1,9 @@
 #![no_std]
 
-use earnproof_shared::{ContractError, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS};
+use earnproof_shared::{
+    ContractError, MigrationStatus, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+};
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
 #[contract]
@@ -15,6 +18,7 @@ enum DataKey {
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
+    MigrationStatus,
     /// Monotonically-increasing contract version stored in instance storage.
     /// Prevents installing an older (or equal) version over a newer one.
     ContractVersion,
@@ -109,6 +113,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
@@ -126,6 +131,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn pause(env: Env) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -135,6 +141,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn unpause(env: Env) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -144,6 +151,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
@@ -157,6 +165,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
@@ -202,6 +211,82 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::ContractVersion)
             .unwrap_or(0)
+    }
+
+    pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
+        env.storage().instance().get(&DataKey::MigrationStatus)
+    }
+
+    pub fn begin_migration(
+        env: Env,
+        target_contract_version: u32,
+        total_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            return if status.target_contract_version == target_contract_version
+                && status.total_items == total_items
+            {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+
+        let status = MigrationStatus {
+            status_version: MIGRATION_STATUS_VERSION,
+            target_contract_version,
+            cursor: 0,
+            total_items,
+            complete: false,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
+    pub fn advance_migration(
+        env: Env,
+        expected_cursor: u32,
+        processed_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut status =
+            Self::get_migration_status(env.clone()).ok_or(ContractError::InvalidState)?;
+        if expected_cursor < status.cursor {
+            return if expected_cursor.saturating_add(processed_items) <= status.cursor {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        if expected_cursor != status.cursor || status.complete {
+            return Err(ContractError::InvalidState);
+        }
+        let next = status
+            .cursor
+            .checked_add(processed_items)
+            .ok_or(ContractError::InvalidInput)?;
+        if next > status.total_items {
+            return Err(ContractError::InvalidInput);
+        }
+        status.cursor = next;
+        status.complete = next == status.total_items;
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
     }
 
     /// Admin-only: add `wasm_hash` to the upgrade allowlist and record the
@@ -281,6 +366,11 @@ impl ProtocolConfigContract {
         if new_version <= old_version {
             panic!("upgrade would not advance contract version");
         }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            if !status.complete || status.target_contract_version != new_version {
+                panic!("required storage migration is incomplete");
+            }
+        }
 
         // Consume the allowlist entry before applying so re-entrancy cannot
         // replay the same hash.
@@ -298,6 +388,7 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &new_version);
+        env.storage().instance().remove(&DataKey::MigrationStatus);
         Self::extend_instance_ttl(env.clone());
 
         ContractUpgraded {
@@ -316,6 +407,12 @@ impl ProtocolConfigContract {
             return Err(ContractError::InvalidInput);
         }
         Ok(())
+    }
+
+    fn assert_operational(env: &Env) {
+        if Self::get_migration_status(env.clone()).is_some_and(|status| !status.complete) {
+            panic!("storage migration in progress");
+        }
     }
 
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
@@ -612,8 +709,7 @@ mod test {
                     &env,
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
-                ]
-                .into(),
+                ],
                 sub_invokes: &[],
             },
         }]);
@@ -849,9 +945,8 @@ mod test {
 
         // Verify exact state written
         assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
+        assert!(
+            !client.is_paused(),
             "protocol must not be paused after initialization"
         );
         assert_eq!(
@@ -1093,7 +1188,7 @@ mod test {
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
-        assert_eq!(client.is_paused(), false);
+        assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
@@ -1165,5 +1260,99 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    #[test]
+    fn migration_checkpoints_resume_and_replay_monotonically() {
+        let (_env, client, _admin) = setup();
+        let started = client.begin_migration(&2, &250);
+        assert_eq!(started.cursor, 0);
+        assert!(!started.complete);
+
+        let first = client.advance_migration(&0, &100);
+        assert_eq!(first.cursor, 100);
+        assert_eq!(client.get_migration_status(), Some(first.clone()));
+
+        // Replaying an already committed batch is idempotent.
+        assert_eq!(client.advance_migration(&0, &100), first);
+        assert_eq!(client.advance_migration(&100, &100).cursor, 200);
+        let complete = client.advance_migration(&200, &50);
+        assert_eq!(complete.cursor, 250);
+        assert!(complete.complete);
+    }
+
+    #[test]
+    fn migration_batch_and_cursor_boundaries_are_enforced() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(
+            client.try_begin_migration(&1, &10),
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_begin_migration(&2, &0),
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
+        client.begin_migration(&2, &101);
+        assert_eq!(
+            client.try_advance_migration(&0, &(earnproof_shared::MAX_MIGRATION_BATCH + 1)),
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_advance_migration(&1, &1),
+            Err(Ok(earnproof_shared::ContractError::InvalidState))
+        );
+        client.advance_migration(&0, &100);
+        assert_eq!(
+            client.try_advance_migration(&100, &2),
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
+    }
+
+    #[test]
+    fn migration_blocks_operations_and_upgrade_until_complete() {
+        let (env, client, _admin) = setup();
+        let wasm_hash = bytes(&env, 0x81);
+        client.approve_upgrade(&wasm_hash, &2);
+        client.begin_migration(&2, &2);
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { client.pause() })).is_err()
+        );
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.upgrade_contract(&wasm_hash)
+        }))
+        .is_err());
+
+        client.advance_migration(&0, &2);
+        client.upgrade_contract(&wasm_hash);
+        assert_eq!(client.get_contract_version(), 2);
+        assert!(client.get_migration_status().is_none());
+    }
+
+    #[test]
+    #[should_panic]
+    fn migration_checkpoint_requires_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let other = Address::from_str(&env, OTHER);
+        client.initialize(&admin);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &other,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "begin_migration",
+                args: soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::into_val(&2_u32, &env),
+                    soroban_sdk::IntoVal::into_val(&10_u32, &env),
+                ],
+                sub_invokes: &[],
+            },
+        }]);
+        client.begin_migration(&2, &10);
     }
 }
