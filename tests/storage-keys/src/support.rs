@@ -233,6 +233,7 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    config.pause();
 
     Deployment {
         env,

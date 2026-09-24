@@ -10,6 +10,8 @@ pub struct ProtocolConfigContract;
 enum DataKey {
     Admin,
     Paused,
+    CurrentPause,
+    LatestPause,
     ConfigVersion,
     SchemaVersion(u32),
     /// Allowlist entry: maps a WASM hash to the target contract version it
@@ -40,6 +42,18 @@ pub struct Paused {
 #[contractevent]
 pub struct Unpaused {
     pub paused: bool,
+}
+
+/// Fixed-size metadata that correlates a pause with an off-chain incident
+/// record without placing incident plaintext on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseMetadata {
+    pub incident_id: BytesN<32>,
+    pub reason_commitment: BytesN<32>,
+    pub started_at: u64,
+    pub ended_at: u64,
+    pub active: bool,
 }
 
 #[contractevent]
@@ -126,9 +140,48 @@ impl ProtocolConfigContract {
     }
 
     pub fn pause(env: Env) -> Result<(), ContractError> {
+        // Retained for backwards ABI compatibility. New integrations should
+        // supply operator-controlled commitments through pause_with_metadata.
+        let legacy_commitment = BytesN::from_array(&env, &[0; 32]);
+        Self::pause_with_metadata(env, legacy_commitment.clone(), legacy_commitment)
+    }
+
+    pub fn pause_with_metadata(
+        env: Env,
+        incident_id: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+
+        if Self::is_paused(env.clone()) {
+            let current = Self::get_current_pause(env.clone());
+            return match current {
+                Some(metadata)
+                    if metadata.incident_id == incident_id
+                        && metadata.reason_commitment == reason_commitment =>
+                {
+                    Ok(())
+                }
+                Some(_) => Err(ContractError::InvalidState),
+                None => Err(ContractError::InvalidState),
+            };
+        }
+
+        let metadata = PauseMetadata {
+            incident_id,
+            reason_commitment,
+            started_at: env.ledger().timestamp(),
+            ended_at: 0,
+            active: true,
+        };
         env.storage().instance().set(&DataKey::Paused, &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentPause, &metadata);
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestPause, &metadata);
         Self::bump_config_version(env.clone());
         Paused { paused: true }.publish(&env);
         Ok(())
@@ -137,9 +190,63 @@ impl ProtocolConfigContract {
     pub fn unpause(env: Env) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+
+        if !Self::is_paused(env.clone()) {
+            return Ok(());
+        }
+
+        if let Some(mut metadata) = Self::get_current_pause(env.clone()) {
+            metadata.active = false;
+            metadata.ended_at = env.ledger().timestamp();
+            env.storage()
+                .instance()
+                .set(&DataKey::LatestPause, &metadata);
+            env.storage().instance().remove(&DataKey::CurrentPause);
+        }
         env.storage().instance().set(&DataKey::Paused, &false);
         Self::bump_config_version(env.clone());
         Unpaused { paused: false }.publish(&env);
+        Ok(())
+    }
+
+    /// Returns the active incident, or `None` while the protocol is unpaused.
+    pub fn get_current_pause(env: Env) -> Option<PauseMetadata> {
+        env.storage().instance().get(&DataKey::CurrentPause)
+    }
+
+    /// Returns the newest active or closed incident known to this contract.
+    pub fn get_latest_pause(env: Env) -> Option<PauseMetadata> {
+        env.storage().instance().get(&DataKey::LatestPause)
+    }
+
+    /// Adds metadata to a paused deployment created by a pre-metadata WASM.
+    /// The transition time cannot be recovered, so migration records the
+    /// current ledger timestamp and preserves the existing paused state.
+    pub fn migrate_pause_metadata(
+        env: Env,
+        incident_id: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if !Self::is_paused(env.clone()) || Self::get_current_pause(env.clone()).is_some() {
+            return Err(ContractError::InvalidState);
+        }
+
+        let metadata = PauseMetadata {
+            incident_id,
+            reason_commitment,
+            started_at: env.ledger().timestamp(),
+            ended_at: 0,
+            active: true,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentPause, &metadata);
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestPause, &metadata);
+        Self::extend_instance_ttl(env);
         Ok(())
     }
 
@@ -361,7 +468,10 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::TTL_THRESHOLD_LEDGERS;
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use soroban_sdk::{
+        testutils::storage::{Instance as _, Persistent as _},
+        Address, BytesN, Env,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -612,8 +722,7 @@ mod test {
                     &env,
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
-                ]
-                .into(),
+                ],
                 sub_invokes: &[],
             },
         }]);
@@ -849,9 +958,8 @@ mod test {
 
         // Verify exact state written
         assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
+        assert!(
+            !client.is_paused(),
             "protocol must not be paused after initialization"
         );
         assert_eq!(
@@ -1093,7 +1201,7 @@ mod test {
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
-        assert_eq!(client.is_paused(), false);
+        assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 
@@ -1165,5 +1273,100 @@ mod test {
             client.initialize(&admin)
         }))
         .is_err());
+    }
+
+    #[test]
+    fn pause_metadata_lifecycle_is_bounded_and_deterministic() {
+        let (env, client, _admin) = setup();
+        let incident_id = bytes(&env, 0x31);
+        let reason_commitment = bytes(&env, 0x42);
+
+        client.pause_with_metadata(&incident_id, &reason_commitment);
+        let active = client.get_current_pause().expect("active pause metadata");
+        assert_eq!(active.incident_id, incident_id);
+        assert_eq!(active.reason_commitment, reason_commitment);
+        assert!(active.active);
+        assert_eq!(active.ended_at, 0);
+        assert_eq!(client.get_config_version(), 2);
+
+        // An identical retry is a no-op; conflicting metadata cannot replace
+        // the incident already in progress.
+        client.pause_with_metadata(&incident_id, &reason_commitment);
+        assert_eq!(client.get_config_version(), 2);
+        assert_eq!(
+            client.try_pause_with_metadata(&bytes(&env, 0x32), &reason_commitment),
+            Err(Ok(earnproof_shared::ContractError::InvalidState))
+        );
+
+        client.unpause();
+        assert!(client.get_current_pause().is_none());
+        let closed = client.get_latest_pause().expect("latest pause metadata");
+        assert_eq!(closed.incident_id, incident_id);
+        assert!(!closed.active);
+        assert!(closed.ended_at >= closed.started_at);
+        assert_eq!(client.get_config_version(), 3);
+
+        client.unpause();
+        assert_eq!(client.get_config_version(), 3);
+        assert_eq!(client.get_latest_pause(), Some(closed));
+    }
+
+    #[test]
+    fn paused_legacy_state_can_be_migrated_once() {
+        let (env, client, _admin) = setup();
+        env.as_contract(&client.address, || {
+            env.storage().instance().set(&DataKey::Paused, &true);
+        });
+
+        let incident_id = bytes(&env, 0x51);
+        let reason_commitment = bytes(&env, 0x52);
+        client.migrate_pause_metadata(&incident_id, &reason_commitment);
+
+        let metadata = client.get_current_pause().expect("migrated metadata");
+        assert_eq!(metadata.incident_id, incident_id);
+        assert_eq!(metadata.reason_commitment, reason_commitment);
+        assert!(metadata.active);
+        assert_eq!(
+            client.try_migrate_pause_metadata(&incident_id, &reason_commitment),
+            Err(Ok(earnproof_shared::ContractError::InvalidState))
+        );
+    }
+
+    #[test]
+    fn pause_metadata_uses_the_contract_instance_ttl() {
+        let (env, client, _admin) = setup();
+        client.pause_with_metadata(&bytes(&env, 0x61), &bytes(&env, 0x62));
+
+        let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+        assert!(ttl > TTL_THRESHOLD_LEDGERS);
+        assert!(client.get_current_pause().is_some());
+        assert!(client.get_latest_pause().is_some());
+    }
+
+    #[test]
+    #[should_panic]
+    fn pause_metadata_requires_current_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProtocolConfigContract, ());
+        let client = ProtocolConfigContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let other = Address::from_str(&env, OTHER);
+        client.initialize(&admin);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &other,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "pause_with_metadata",
+                args: soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::into_val(&bytes(&env, 0x71), &env),
+                    soroban_sdk::IntoVal::into_val(&bytes(&env, 0x72), &env),
+                ],
+                sub_invokes: &[],
+            },
+        }]);
+        client.pause_with_metadata(&bytes(&env, 0x71), &bytes(&env, 0x72));
     }
 }

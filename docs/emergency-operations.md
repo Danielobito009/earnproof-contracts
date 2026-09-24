@@ -16,6 +16,22 @@ this document is the on-chain specification that runbook builds on top of.
 
 ## The pause switch
 
+New integrations should call `pause_with_metadata(incident_id,
+reason_commitment)`. Both values are fixed 32-byte commitments: `incident_id`
+correlates the transition with the operator's incident system, while
+`reason_commitment` binds the on-chain action to a reason kept off-chain.
+Plaintext incident descriptions are never accepted. `get_current_pause`
+returns only an active incident and `get_latest_pause` retains the most recent
+active or closed incident. `unpause` closes that same incident by setting its
+end timestamp; it does not create a second incident.
+
+An identical pause retry and an already-unpaused retry are no-ops. A second
+pause with different metadata is rejected until the active incident is closed.
+`migrate_pause_metadata` is the admin-only path for a deployment that was
+already paused by an older WASM. The zero-argument `pause` entry point remains
+for ABI compatibility and records zero commitments; operational tooling must
+use `pause_with_metadata` for incident correlation.
+
 `protocol-config` owns a single boolean. `proof-registry` reads it over a
 cross-contract call before admitting new proofs. `issuer-registry` does not read
 it at all.
