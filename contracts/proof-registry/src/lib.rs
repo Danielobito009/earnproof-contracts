@@ -111,6 +111,25 @@ impl ProofRegistryContract {
         }
         Self::require_auth(&issuer_address);
 
+        // ── Precondition checks (in order of precedence) ──────────────────────
+        // Check 1: Contract paused (highest precedence — most external state)
+        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
+        if protocol_client.is_paused() {
+            return Err(ProofError::ContractPaused);
+        }
+
+        // Check 2: Issuer active (issuer-specific state)
+        let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
+        if !issuer_client.is_active_address(&issuer_address) {
+            return Err(ProofError::IssuerInactive);
+        }
+
+        // Check 3: Schema supported (protocol configuration state)
+        if !protocol_client.is_schema_version_approved(&schema_version) {
+            return Err(ProofError::UnsupportedSchema);
+        }
+
+        // Check 4: Input validation (proof-specific data validation)
         if schema_version == 0 {
             return Err(ProofError::InvalidSchemaVersion);
         }
@@ -119,29 +138,13 @@ impl ProofRegistryContract {
             return Err(ProofError::ProofExpired);
         }
 
-        let protocol_config =
-            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
-        if protocol_client.is_paused() {
-            return Err(ProofError::InvalidSchemaVersion); // Use existing error for protocol paused state
-        }
-
-        if !protocol_client.is_schema_version_approved(&schema_version) {
-            return Err(ProofError::SchemaVersionNotApproved);
-        }
-
-        let issuer_registry =
-            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-        let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
-        if !issuer_client.is_active_address(&issuer_address) {
-            return Err(ProofError::InvalidSchemaVersion); // Simplified - issuer inactive
-        }
-
+        // Check 5: Uniqueness constraint (storage precondition)
         let key = DataKey::Proof(proof_id_hash.clone());
         if env.storage().persistent().has(&key) {
             return Err(ProofError::ProofAlreadyRegistered);
         }
 
+        // ── Proof registration (all preconditions passed) ────────────────────────
         let now = env.ledger().timestamp();
         let record = ProofRecord {
             proof_id_hash,
@@ -528,7 +531,7 @@ mod test {
             &2,
             &2_000,
         );
-        assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
+        assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
     }
 
     #[test]
@@ -544,7 +547,7 @@ mod test {
             &1,
             &2_000,
         );
-        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
     }
 
     #[test]
@@ -565,7 +568,7 @@ mod test {
             &1,
             &2_000,
         );
-        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
     }
 
     #[test]
@@ -1542,5 +1545,273 @@ mod test {
         assert!(pc_client.is_paused());
         pc_client.unpause();
         assert!(!pc_client.is_paused());
+    }
+
+    // ── Issue #136: proof registration precondition error code tests ──────────
+
+    /// Positive: all preconditions met → registration succeeds.
+    #[test]
+    fn register_proof_succeeds_when_all_preconditions_met() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 200);
+
+        let result = client.try_register_proof(&proof_id, &bytes(&env, 201), &issuer, &1, &2_000);
+        assert!(
+            result.is_ok(),
+            "registration must succeed when all preconditions are met"
+        );
+        assert!(client.is_valid_proof(&proof_id));
+    }
+
+    /// ContractPaused: paused contract → distinct code 307.
+    #[test]
+    fn register_proof_returns_contract_paused_when_paused() {
+        let (env, client, protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+        protocol_config.pause();
+
+        let result = client.try_register_proof(
+            &bytes(&env, 210),
+            &bytes(&env, 211),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+        assert_eq!(ProofError::ContractPaused as u32, 307);
+        // Must not be the old overloaded code
+        assert_ne!(
+            ProofError::ContractPaused as u32,
+            ProofError::InvalidSchemaVersion as u32
+        );
+    }
+
+    /// IssuerInactive: suspended issuer → distinct code 308.
+    #[test]
+    fn register_proof_returns_issuer_inactive_when_issuer_not_active() {
+        let (env, client, _protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(&bytes(&env, 15), &inactive_issuer, &bytes(&env, 16));
+        issuer_registry.suspend_issuer(&bytes(&env, 15));
+
+        let result = client.try_register_proof(
+            &bytes(&env, 220),
+            &bytes(&env, 221),
+            &inactive_issuer,
+            &1,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+        assert_eq!(ProofError::IssuerInactive as u32, 308);
+        // Must not be ContractPaused
+        assert_ne!(
+            ProofError::IssuerInactive as u32,
+            ProofError::ContractPaused as u32
+        );
+    }
+
+    /// UnsupportedSchema: unapproved schema → distinct code 309.
+    #[test]
+    fn register_proof_returns_unsupported_schema_for_unknown_schema() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Schema version 99 is well-formed but not approved in protocol-config.
+        let result = client.try_register_proof(
+            &bytes(&env, 230),
+            &bytes(&env, 231),
+            &Address::from_str(&env, ISSUER),
+            &99,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
+        assert_eq!(ProofError::UnsupportedSchema as u32, 309);
+        // Must not be MalformedInput — the schema value itself is valid, just unapproved
+        assert_ne!(
+            ProofError::UnsupportedSchema as u32,
+            ProofError::MalformedInput as u32
+        );
+    }
+
+    /// InvalidSchemaVersion: schema version 0 → code 304 (unchanged).
+    #[test]
+    fn register_proof_returns_malformed_input_for_bad_proof_data() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Schema version 0 is the malformed-input case for the schema field.
+        let result = client.try_register_proof(
+            &bytes(&env, 240),
+            &bytes(&env, 241),
+            &Address::from_str(&env, ISSUER),
+            &0,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+        // Must not be UnsupportedSchema — the value 0 is structurally invalid
+        assert_ne!(
+            ProofError::InvalidSchemaVersion as u32,
+            ProofError::UnsupportedSchema as u32
+        );
+    }
+
+    /// Distinctness: all four new codes must have unique numeric values.
+    #[test]
+    fn error_codes_are_unique_across_enum() {
+        use earnproof_shared::ProofError;
+        extern crate std;
+        use std::collections::HashSet;
+
+        let codes: std::vec::Vec<u32> = std::vec![
+            ProofError::ProofAlreadyRegistered as u32,
+            ProofError::ProofNotFound as u32,
+            ProofError::ProofAlreadyRevoked as u32,
+            ProofError::ProofExpired as u32,
+            ProofError::InvalidSchemaVersion as u32,
+            ProofError::SchemaVersionNotApproved as u32,
+            ProofError::InvalidAddress as u32,
+            ProofError::ContractPaused as u32,
+            ProofError::IssuerInactive as u32,
+            ProofError::UnsupportedSchema as u32,
+            ProofError::MalformedInput as u32,
+        ];
+
+        let unique: HashSet<_> = codes.iter().collect();
+        assert_eq!(
+            codes.len(),
+            unique.len(),
+            "ProofError codes must all be unique"
+        );
+    }
+
+    /// Auth failure is not collapsed into new precondition codes.
+    #[test]
+    fn auth_failure_is_not_collapsed_into_new_codes() {
+        use earnproof_shared::ProofError;
+
+        // Build an env where no auth is mocked — the require_auth call aborts.
+        let env = Env::default();
+        // Do NOT call mock_all_auths()
+        let protocol_config_id = env.register(protocol_config::ProtocolConfigContract, ());
+        let pc = protocol_config::ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let issuer_registry_id = env.register(issuer_registry::IssuerRegistryContract, ());
+        let ir = issuer_registry::IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        env.mock_all_auths();
+        pc.initialize(&admin);
+        pc.approve_schema_version(&1);
+        ir.initialize(&admin);
+        ir.register_issuer(&bytes(&env, 9), &issuer, &bytes(&env, 8));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+
+        // Now remove all auths so the issuer's require_auth() will abort.
+        env.set_auths(&[]);
+
+        // The call must abort at the host level (not return a typed ProofError).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_proof(&bytes(&env, 250), &bytes(&env, 251), &issuer, &1, &2_000);
+        }));
+        assert!(
+            result.is_err(),
+            "unauthorized registration must abort, not return a typed error"
+        );
+    }
+
+    /// Precondition order: ContractPaused is checked before IssuerInactive.
+    #[test]
+    fn contract_paused_checked_before_issuer() {
+        let (env, client, protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Pause the contract AND suspend the issuer.
+        protocol_config.pause();
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(&bytes(&env, 17), &inactive_issuer, &bytes(&env, 18));
+        issuer_registry.suspend_issuer(&bytes(&env, 17));
+
+        let result = client.try_register_proof(
+            &bytes(&env, 260),
+            &bytes(&env, 261),
+            &inactive_issuer,
+            &1,
+            &2_000,
+        );
+
+        // ContractPaused (307) must take precedence over IssuerInactive (308).
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+    }
+
+    /// Precondition order: IssuerInactive is checked before UnsupportedSchema.
+    #[test]
+    fn issuer_checked_before_schema() {
+        let (env, client, _protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Suspend the issuer AND use an unapproved schema.
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(&bytes(&env, 19), &inactive_issuer, &bytes(&env, 20));
+        issuer_registry.suspend_issuer(&bytes(&env, 19));
+
+        let result = client.try_register_proof(
+            &bytes(&env, 270),
+            &bytes(&env, 271),
+            &inactive_issuer,
+            &99, // Also unapproved schema
+            &2_000,
+        );
+
+        // IssuerInactive (308) must take precedence over UnsupportedSchema (309).
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+    }
+
+    /// Regression: existing error code values must be unchanged.
+    #[test]
+    fn existing_error_code_values_unchanged() {
+        use earnproof_shared::ProofError;
+        assert_eq!(ProofError::ProofAlreadyRegistered as u32, 300);
+        assert_eq!(ProofError::ProofNotFound as u32, 301);
+        assert_eq!(ProofError::ProofAlreadyRevoked as u32, 302);
+        assert_eq!(ProofError::ProofExpired as u32, 303);
+        assert_eq!(ProofError::InvalidSchemaVersion as u32, 304);
+        assert_eq!(ProofError::SchemaVersionNotApproved as u32, 305);
+        assert_eq!(ProofError::InvalidAddress as u32, 306);
+    }
+
+    /// Regression: new codes must not reuse any existing code value.
+    #[test]
+    fn new_codes_do_not_reuse_old_values() {
+        use earnproof_shared::ProofError;
+        let existing = [300_u32, 301, 302, 303, 304, 305, 306];
+        let new_codes = [
+            ProofError::ContractPaused as u32,
+            ProofError::IssuerInactive as u32,
+            ProofError::UnsupportedSchema as u32,
+            ProofError::MalformedInput as u32,
+        ];
+        for new_code in new_codes {
+            assert!(
+                !existing.contains(&new_code),
+                "new code {new_code} reuses an existing ProofError code value"
+            );
+        }
     }
 }
