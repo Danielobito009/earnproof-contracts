@@ -92,6 +92,24 @@ tolerate the old encoding.**
 
 ## Storage migration strategy
 
+### Resumable migration checkpoints
+
+All three contracts expose `begin_migration`, `advance_migration`, and
+`get_migration_status`. The versioned status record contains the target
+contract version, current cursor, total item count, and completion flag.
+Governance starts a checkpoint before processing any bounded migration work,
+then commits at most `MAX_MIGRATION_BATCH` (100) items per invocation.
+
+Each step supplies the cursor it read. A replay of an already committed batch
+returns the current status unchanged; a gap, overlap, rollback, zero-sized
+batch, oversized batch, or advance beyond the declared total is rejected.
+Normal state-changing operations are unavailable while a checkpoint is
+incomplete. `upgrade_contract` also rejects an incomplete checkpoint or one
+for a different target version, and consumes the completed record only after
+the upgrade version advances. A failed or interrupted transaction therefore
+resumes from the last committed cursor rather than restarting an unbounded
+traversal.
+
 There is no migration hook in the upgrade mechanism (see above) — a storage
 layout change is only ever safe under `upgrade_contract` if the new code's
 deserialization tolerates the old bytes (for example, an `Option<T>` field

@@ -14,6 +14,23 @@ pub const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 /// Target ledgers for extended TTL after triggering a preemptive extension.
 pub const TTL_EXTEND_TO_LEDGERS: u32 = 500_000;
 
+/// Storage layout version for the migration checkpoint record.
+pub const MIGRATION_STATUS_VERSION: u32 = 1;
+
+/// Maximum number of records a single migration invocation may commit.
+pub const MAX_MIGRATION_BATCH: u32 = 100;
+
+/// Resumable progress marker shared by every contract upgrade path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationStatus {
+    pub status_version: u32,
+    pub target_contract_version: u32,
+    pub cursor: u32,
+    pub total_items: u32,
+    pub complete: bool,
+}
+
 // A Stellar strkey address (G...) is always exactly 56 ASCII characters.
 // soroban_sdk::String has no .chars() (unlike std::string::String, and
 // unlike Symbol, this isn't even gated off-WASM only - it simply doesn't

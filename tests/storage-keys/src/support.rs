@@ -235,6 +235,10 @@ pub fn exercised_deployment() -> Deployment {
     proofs.revoke_proof(&bytes32(&env, 7));
     config.pause();
 
+    config.begin_migration(&2, &1);
+    issuers.begin_migration(&2, &1);
+    proofs.begin_migration(&2, &1);
+
     Deployment {
         env,
         config_id,

@@ -162,6 +162,7 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Admin",
             "ContractVersion",
             "IssuerRegistry",
+            "MigrationStatus",
             "ProtocolConfig"
         ]
     );

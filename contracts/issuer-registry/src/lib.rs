@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, IssuerError, IssuerRecord, IssuerStatus, TTL_EXTEND_TO_LEDGERS,
-    TTL_THRESHOLD_LEDGERS,
+    ContractError, IssuerError, IssuerRecord, IssuerStatus, MigrationStatus, MAX_MIGRATION_BATCH,
+    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
@@ -16,6 +16,7 @@ enum DataKey {
     AddressIssuer(Address),
     /// Allowlist entry: maps a WASM hash to the target contract version.
     AllowedWasm(BytesN<32>),
+    MigrationStatus,
     /// Monotonically-increasing contract version.  Prevents downgrade.
     ContractVersion,
 }
@@ -134,6 +135,7 @@ impl IssuerRegistryContract {
         issuer_address: Address,
         metadata_hash: BytesN<32>,
     ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_valid_issuer_address(&issuer_address)?;
         Self::require_auth(&admin);
@@ -180,6 +182,7 @@ impl IssuerRegistryContract {
         issuer_id_hash: BytesN<32>,
         metadata_hash: BytesN<32>,
     ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
@@ -226,6 +229,7 @@ impl IssuerRegistryContract {
         issuer_id_hash: BytesN<32>,
         new_address: Address,
     ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_valid_issuer_address(&new_address)?;
         Self::require_auth(&admin);
@@ -313,6 +317,81 @@ impl IssuerRegistryContract {
             .unwrap_or(0)
     }
 
+    pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
+        env.storage().instance().get(&DataKey::MigrationStatus)
+    }
+
+    pub fn begin_migration(
+        env: Env,
+        target_contract_version: u32,
+        total_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            return if status.target_contract_version == target_contract_version
+                && status.total_items == total_items
+            {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        let status = MigrationStatus {
+            status_version: MIGRATION_STATUS_VERSION,
+            target_contract_version,
+            cursor: 0,
+            total_items,
+            complete: false,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
+    pub fn advance_migration(
+        env: Env,
+        expected_cursor: u32,
+        processed_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut status =
+            Self::get_migration_status(env.clone()).ok_or(ContractError::InvalidState)?;
+        if expected_cursor < status.cursor {
+            return if expected_cursor.saturating_add(processed_items) <= status.cursor {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        if expected_cursor != status.cursor || status.complete {
+            return Err(ContractError::InvalidState);
+        }
+        let next = status
+            .cursor
+            .checked_add(processed_items)
+            .ok_or(ContractError::InvalidInput)?;
+        if next > status.total_items {
+            return Err(ContractError::InvalidInput);
+        }
+        status.cursor = next;
+        status.complete = next == status.total_items;
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
     ///
     /// `new_version` must be strictly greater than the current contract
@@ -385,6 +464,11 @@ impl IssuerRegistryContract {
         if new_version <= old_version {
             panic!("upgrade would not advance contract version");
         }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            if !status.complete || status.target_contract_version != new_version {
+                panic!("required storage migration is incomplete");
+            }
+        }
 
         // Consume allowlist entry before applying to prevent replay.
         env.storage()
@@ -398,6 +482,7 @@ impl IssuerRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &new_version);
+        env.storage().instance().remove(&DataKey::MigrationStatus);
         Self::extend_instance_ttl(env.clone());
 
         ContractUpgraded {
@@ -418,6 +503,12 @@ impl IssuerRegistryContract {
         Ok(())
     }
 
+    fn assert_operational(env: &Env) {
+        if Self::get_migration_status(env.clone()).is_some_and(|status| !status.complete) {
+            panic!("storage migration in progress");
+        }
+    }
+
     fn require_valid_issuer_address(address: &Address) -> Result<(), IssuerError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(IssuerError::InvalidAddress);
@@ -430,6 +521,7 @@ impl IssuerRegistryContract {
         issuer_id_hash: BytesN<32>,
         status: IssuerStatus,
     ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
