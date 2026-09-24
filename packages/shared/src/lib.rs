@@ -148,6 +148,23 @@ pub enum ProofError {
     InvalidSchemaVersion = 304,
     SchemaVersionNotApproved = 305,
     InvalidAddress = 306,
+    // Separated precondition errors (307-310)
+    /// Contract is paused — proof registration is temporarily disabled.
+    /// Recovery: monitor for unpause event before retrying.
+    ContractPaused = 307,
+    /// Issuer account is not active or not authorized to register proofs.
+    /// Distinct from authorization failure — the issuer exists but is inactive.
+    /// Recovery: contact platform to activate the issuer account.
+    IssuerInactive = 308,
+    /// The proof schema identifier is not supported or not registered.
+    /// Distinct from malformed input — the schema reference is well-formed
+    /// but unknown to this contract.
+    /// Recovery: check supported schemas via get_supported_schemas().
+    UnsupportedSchema = 309,
+    /// Proof input data is malformed — fails format or size validation.
+    /// Distinct from unsupported schema — the input itself is invalid.
+    /// Recovery: validate input against the schema before resubmitting.
+    MalformedInput = 310,
 }
 
 #[contracttype]
