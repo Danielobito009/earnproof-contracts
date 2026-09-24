@@ -1,4 +1,4 @@
-/// Issuer Registry TTL Boundary Tests
+//! Issuer Registry TTL Boundary Tests
 
 #[cfg(test)]
 mod tests {

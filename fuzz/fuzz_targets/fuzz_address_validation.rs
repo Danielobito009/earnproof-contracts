@@ -1,5 +1,5 @@
 #![no_main]
-use earnproof_shared::{is_valid_principal_address, is_zero_or_sentinel_address};
+use earnproof_shared::is_zero_or_sentinel_address;
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::Env;
 
@@ -22,21 +22,17 @@ fuzz_target!(|data: &[u8]| {
 
     // Test validation of arbitrary strings
     // These functions should not panic, only return true/false
-    let is_valid_principal = if let Ok(addr_str) =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // We can't directly call is_valid_principal_address here because it takes an Address
-            // But we can test the logic by checking string properties
-            lossy_str.len() == 56
-                && !lossy_str.is_empty()
-                && !lossy_str.chars().all(|c| c == 'A')
-                && lossy_str
-                    .chars()
-                    .all(|c| matches!(c, 'A'..='Z' | '2'..='7'))
-        })) {
-        addr_str
-    } else {
-        false
-    };
+    let is_valid_principal: bool = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // We can't directly call is_valid_principal_address here because it takes an Address
+        // But we can test the logic by checking string properties
+        lossy_str.len() == 56
+            && !lossy_str.is_empty()
+            && !lossy_str.chars().all(|c| c == 'A')
+            && lossy_str
+                .chars()
+                .all(|c| matches!(c, 'A'..='Z' | '2'..='7'))
+    }))
+    .unwrap_or_default();
 
     // Case 2: Test boundary cases for string length
     let _ = is_valid_principal;
@@ -51,25 +47,19 @@ fuzz_target!(|data: &[u8]| {
     );
     let _ = is_zero_or_sentinel_address(&addr_all_a);
 
-    // Pattern 2: Empty (should be rejected)
-    let empty = "";
-    if empty.len() == 0 {
-        // This tests the length check
-    }
-
-    // Pattern 3: Too short (should be rejected)
+    // Pattern 2: Too short (should be rejected)
     let too_short = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"; // 32 chars
     if too_short.len() != 56 {
         // Expected: rejected
     }
 
-    // Pattern 4: Too long (should be rejected)
+    // Pattern 3: Too long (should be rejected)
     let too_long = "A".repeat(100);
     if too_long.len() != 56 {
         // Expected: rejected
     }
 
-    // Pattern 5: Invalid characters (should be rejected)
+    // Pattern 4: Invalid characters (should be rejected)
     let has_invalid = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA001"; // Has '0' and '1'
     if has_invalid
         .chars()
@@ -78,7 +68,7 @@ fuzz_target!(|data: &[u8]| {
         // Expected: rejected
     }
 
-    // Pattern 6: Zero address (sentinel)
+    // Pattern 5: Zero address (sentinel)
     let zero_sentinel = "G".to_string() + &"A".repeat(55);
     if zero_sentinel.len() == 56 && zero_sentinel.chars().all(|c| c == 'A' || c == 'G') {
         // This is close to a valid zero address format

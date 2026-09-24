@@ -86,7 +86,7 @@ pub struct StorageNamespace {
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 26] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "AddressIssuer",
@@ -97,6 +97,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
+        namespace: "AddressTtl",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "keepalive operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "Admin",
         arity: 0,
         class: StorageClass::Instance,
@@ -110,6 +118,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
         class: StorageClass::Instance,
         value: "u32",
         owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "InstanceLiveUntil",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "keepalive operator",
     },
     StorageNamespace {
         contract: "issuer-registry",
@@ -120,6 +136,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
         owner: "registry operator",
     },
     StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "IssuerTtl",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "keepalive operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "MigrationStatus",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "MigrationStatus",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
         contract: "proof-registry",
         namespace: "Admin",
         arity: 0,
@@ -134,6 +166,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
         class: StorageClass::Instance,
         value: "u32",
         owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "InstanceLiveUntil",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "keepalive operator",
     },
     StorageNamespace {
         contract: "proof-registry",
@@ -145,11 +185,27 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "MigrationStatus",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "MigrationStatus",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "Proof",
         arity: 1,
         class: StorageClass::Persistent,
         value: "ProofRecord",
         owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "ProofTtl",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "keepalive operator",
     },
     StorageNamespace {
         contract: "proof-registry",
@@ -185,11 +241,51 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 14] = [
     },
     StorageNamespace {
         contract: "protocol-config",
+        namespace: "CurrentPause",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "PauseMetadata",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "InstanceLiveUntil",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "keepalive operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "LatestPause",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "PauseMetadata",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "MigrationStatus",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "MigrationStatus",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "Paused",
         arity: 0,
         class: StorageClass::Instance,
         value: "bool",
         owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaTtl",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "keepalive operator",
     },
     StorageNamespace {
         contract: "protocol-config",
