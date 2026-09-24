@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, MigrationStatus, ProofError, ProofRecord, ProofStatus, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ContractError, MigrationStatus, ProofError, ProofRecord, ProofStatus, TtlStatus,
+    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contracttype, Address, BytesN, Env,
@@ -28,6 +28,8 @@ enum DataKey {
     IssuerRegistry,
     ProtocolConfig,
     Proof(BytesN<32>),
+    ProofTtl(BytesN<32>),
+    InstanceLiveUntil,
     /// Allowlist entry: maps a WASM hash to the target contract version.
     AllowedWasm(BytesN<32>),
     MigrationStatus,
@@ -320,6 +322,33 @@ impl ProofRegistryContract {
         ))
     }
 
+    pub fn get_instance_ttl_status(env: Env) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage().instance().has(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::InstanceLiveUntil),
+        )
+    }
+
+    pub fn get_proof_ttl_status(env: Env, proof_id_hash: BytesN<32>) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage()
+                .persistent()
+                .has(&DataKey::Proof(proof_id_hash.clone())),
+            env.storage()
+                .persistent()
+                .get(&DataKey::ProofTtl(proof_id_hash)),
+        )
+    }
+
+    pub fn refresh_instance_ttl(env: Env) -> Result<TtlStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::extend_instance_ttl(env.clone());
+        Ok(Self::get_instance_ttl_status(env))
+    }
+
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
     ///
     /// `new_version` must be strictly greater than the current contract
@@ -495,12 +524,32 @@ impl ProofRegistryContract {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        let live_until = Self::tracked_live_until(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::InstanceLiveUntil, &live_until);
     }
 
     fn extend_proof_key_ttl(env: Env, key: &DataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        if let DataKey::Proof(proof_id_hash) = key {
+            let tracker = DataKey::ProofTtl(proof_id_hash.clone());
+            let live_until = Self::tracked_live_until(&env);
+            env.storage().persistent().set(&tracker, &live_until);
+            env.storage().persistent().extend_ttl(
+                &tracker,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+    }
+
+    fn tracked_live_until(env: &Env) -> u32 {
+        env.ledger()
+            .sequence()
+            .saturating_add(TTL_EXTEND_TO_LEDGERS.min(env.storage().max_ttl()))
     }
 
     fn require_auth(address: &Address) {
@@ -1670,5 +1719,27 @@ mod test {
         client.approve_upgrade(&wasm_hash, &2);
         client.upgrade_contract(&wasm_hash);
         assert_ne!(client.get_config_digest(), initial);
+    }
+
+    #[test]
+    fn ttl_status_tracks_only_caller_named_proof_entries() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let proof_id = bytes(&env, 0xe4);
+        let unknown_id = bytes(&env, 0xe5);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+        assert_eq!(
+            client.get_proof_ttl_status(&unknown_id).health,
+            earnproof_shared::TtlHealth::Missing
+        );
+        client.register_proof(&proof_id, &bytes(&env, 0xe6), &issuer, &1, &2_000);
+        assert_eq!(
+            client.get_proof_ttl_status(&proof_id).health,
+            earnproof_shared::TtlHealth::Healthy
+        );
     }
 }

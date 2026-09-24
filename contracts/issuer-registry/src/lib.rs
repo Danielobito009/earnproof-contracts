@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, IssuerError, IssuerRecord, IssuerStatus, MigrationStatus, MAX_MIGRATION_BATCH,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ContractError, IssuerError, IssuerRecord, IssuerStatus, MigrationStatus, TtlStatus,
+    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
@@ -14,6 +14,9 @@ enum DataKey {
     Admin,
     Issuer(BytesN<32>),
     AddressIssuer(Address),
+    IssuerTtl(BytesN<32>),
+    AddressTtl(Address),
+    InstanceLiveUntil,
     /// Allowlist entry: maps a WASM hash to the target contract version.
     AllowedWasm(BytesN<32>),
     MigrationStatus,
@@ -257,6 +260,9 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .remove(&DataKey::AddressIssuer(old_address.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AddressTtl(old_address.clone()));
         record.issuer_address = new_address.clone();
         let now = env.ledger().timestamp();
         record.updated_at = now;
@@ -403,6 +409,45 @@ impl IssuerRegistryContract {
             &admin,
             Self::get_contract_version(env.clone()),
         ))
+    }
+
+    pub fn get_instance_ttl_status(env: Env) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage().instance().has(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::InstanceLiveUntil),
+        )
+    }
+
+    pub fn get_issuer_ttl_status(env: Env, issuer_id_hash: BytesN<32>) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage()
+                .persistent()
+                .has(&DataKey::Issuer(issuer_id_hash.clone())),
+            env.storage()
+                .persistent()
+                .get(&DataKey::IssuerTtl(issuer_id_hash)),
+        )
+    }
+
+    pub fn get_address_ttl_status(env: Env, issuer_address: Address) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage()
+                .persistent()
+                .has(&DataKey::AddressIssuer(issuer_address.clone())),
+            env.storage()
+                .persistent()
+                .get(&DataKey::AddressTtl(issuer_address)),
+        )
+    }
+
+    pub fn refresh_instance_ttl(env: Env) -> Result<TtlStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::extend_instance_ttl(env.clone());
+        Ok(Self::get_instance_ttl_status(env))
     }
 
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
@@ -579,6 +624,10 @@ impl IssuerRegistryContract {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        let live_until = Self::tracked_live_until(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::InstanceLiveUntil, &live_until);
     }
 
     fn extend_issuer_ttl(env: Env, issuer_id_hash: BytesN<32>) {
@@ -589,14 +638,38 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        if let DataKey::Issuer(issuer_id_hash) = key {
+            let tracker = DataKey::IssuerTtl(issuer_id_hash.clone());
+            let live_until = Self::tracked_live_until(&env);
+            env.storage().persistent().set(&tracker, &live_until);
+            env.storage().persistent().extend_ttl(
+                &tracker,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
     }
 
     fn extend_address_ttl(env: Env, issuer_address: Address) {
+        let tracker = DataKey::AddressTtl(issuer_address.clone());
+        let live_until = Self::tracked_live_until(&env);
         env.storage().persistent().extend_ttl(
             &DataKey::AddressIssuer(issuer_address),
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );
+        env.storage().persistent().set(&tracker, &live_until);
+        env.storage().persistent().extend_ttl(
+            &tracker,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+    }
+
+    fn tracked_live_until(env: &Env) -> u32 {
+        env.ledger()
+            .sequence()
+            .saturating_add(TTL_EXTEND_TO_LEDGERS.min(env.storage().max_ttl()))
     }
 
     fn require_auth(address: &Address) {
@@ -1464,5 +1537,31 @@ mod test {
         client.approve_upgrade(&wasm_hash, &2);
         client.upgrade_contract(&wasm_hash);
         assert_ne!(client.get_config_digest(), initial);
+    }
+
+    #[test]
+    fn ttl_status_tracks_only_caller_named_issuer_entries() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0xe1);
+        let unknown_id = bytes(&env, 0xe2);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+
+        assert_eq!(
+            client.get_instance_ttl_status().health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+        assert_eq!(
+            client.get_issuer_ttl_status(&unknown_id).health,
+            earnproof_shared::TtlHealth::Missing
+        );
+        client.register_issuer(&issuer_id, &issuer_address, &bytes(&env, 0xe3));
+        assert_eq!(
+            client.get_issuer_ttl_status(&issuer_id).health,
+            earnproof_shared::TtlHealth::Healthy
+        );
+        assert_eq!(
+            client.get_address_ttl_status(&issuer_address).health,
+            earnproof_shared::TtlHealth::Healthy
+        );
     }
 }

@@ -1,7 +1,7 @@
-/// Protocol Config TTL Boundary Tests
-///
-/// Tests for instance storage (Admin, Paused, ConfigVersion, ContractVersion, AllowedWasm)
-/// and persistent storage (SchemaVersion entries).
+//! Protocol Config TTL Boundary Tests
+//!
+//! Tests for instance storage (Admin, Paused, ConfigVersion, ContractVersion, AllowedWasm)
+//! and persistent storage (SchemaVersion entries).
 
 #[cfg(test)]
 mod tests {
